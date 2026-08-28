@@ -27,11 +27,13 @@ ESP32-C3-DevKit-RUST-2 (esp-rust-board) 온보드 구성만으로 시작합니�
 | MCU | ESP32-C3 (RISC-V 160MHz, 4MB Flash, BLE 5.0) | — |
 | IMU | ICM-42670-P (6축 자이로+가속도) | I2C 주소 `0x68` |
 | 온습도 센서 | SHTC3 (이 프로젝트에서는 미사용) | I2C 주소 `0x70` |
-| I2C 버스 | — | SDA=`GPIO10`, SCL=`GPIO8` |
+| I2C 버스 | — | SDA=`GPIO7`, SCL=`GPIO8` |
 | RGB LED | WS2812 (상태 표시용) | `GPIO2` |
-| 단색 LED | — | `GPIO7` |
+| 단색 LED | — | `GPIO10` |
 | 버튼 | BOOT 버튼 (클릭 입력으로 활용) | `GPIO9` (active-low) |
 | 전원 | USB-C, LiPo 충전(MCP73831) | 배터리 전압 측정은 미지원 |
+
+> **주의 (RUST-2 개정판)**: RUST-1은 SDA=GPIO10 / LED=GPIO7이었지만, **RUST-2는 LED가 GPIO10으로 옮겨가면서 SDA가 GPIO7이 됐다.** Espressif 공식 문서의 핀 테이블에는 RUST-1 값이 남아 있는 오류가 있으며, 위 값은 실보드 I2C 스캔으로 확인한 것.
 
 ## 기술 스택
 

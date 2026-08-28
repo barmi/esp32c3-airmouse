@@ -21,7 +21,8 @@ ESP32-C3-DevKit-RUST-2(esp-rust-board) 기반 BLE HID 에어마우스. Rust std(
 ## 하드웨어 핵심 사실
 
 - ESP32-C3에는 USB OTG가 없다 → USB HID 마우스 불가. BLE HID(HOGP)로 구현한다.
-- I2C: SDA=GPIO10, SCL=GPIO8 / ICM-42670-P 주소 0x68 (SHTC3 0x70이 같은 버스)
-- WS2812=GPIO2, 단색 LED=GPIO7, BOOT 버튼=GPIO9 (active-low, 부팅 스트래핑 핀)
+- I2C: **SDA=GPIO7, SCL=GPIO8** / ICM-42670-P 주소 0x68 (SHTC3 0x70이 같은 버스)
+  - RUST-2 개정판 실측값. RUST-1은 SDA=GPIO10이었고 공식 문서 핀 테이블에는 그 값이 잘못 남아 있다.
+- WS2812=GPIO2, 단색 LED=GPIO10, BOOT 버튼=GPIO9 (active-low, 부팅 스트래핑 핀)
 - 배터리 전압 측정 회로 없음 (MCP73831은 충전만 지원)
 - sdkconfig.defaults에 NimBLE가 활성화되어 있다 (esp32-nimble 크레이트용)
