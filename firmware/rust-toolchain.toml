@@ -1,3 +1,6 @@
 [toolchain]
-channel = "nightly"
+# 최신 nightly는 espidf 타겟에서 std 빌드가 깨짐 (rust-lang/rust#158168의
+# fchmodat/AT_FDCWD 사용을 libc espidf가 아직 지원하지 않음). 해당 변경
+# 직전 날짜로 고정. libc가 따라잡으면 최신 nightly로 되돌릴 수 있음.
+channel = "nightly-2026-07-20"
 components = ["rust-src"]
