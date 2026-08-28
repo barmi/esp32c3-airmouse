@@ -28,6 +28,29 @@ impl<'d> Imu<'d> {
         self.drv.gyro_norm().map_err(err)
     }
 
+    /// 정지 상태를 가정하고 자이로 바이어스를 측정한다.
+    ///
+    /// 전원 인가 직후에는 자이로 스핀업 때문에 포화값이 나오므로
+    /// 앞쪽 `discard`개 샘플은 버리고 `samples`개 평균을 낸다.
+    pub fn calibrate_gyro(&mut self, discard: usize, samples: usize) -> anyhow::Result<F32x3> {
+        use esp_idf_svc::hal::delay::FreeRtos;
+
+        for _ in 0..discard {
+            let _ = self.drv.gyro_norm();
+            FreeRtos::delay_ms(5);
+        }
+        let (mut sx, mut sy, mut sz) = (0.0f32, 0.0f32, 0.0f32);
+        for _ in 0..samples {
+            let g = self.gyro_dps()?;
+            sx += g.x;
+            sy += g.y;
+            sz += g.z;
+            FreeRtos::delay_ms(5);
+        }
+        let n = samples as f32;
+        Ok(F32x3::new(sx / n, sy / n, sz / n))
+    }
+
     /// 가속도 (g)
     pub fn accel_g(&mut self) -> anyhow::Result<F32x3> {
         self.drv.accel_norm().map_err(err)

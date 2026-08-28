@@ -1,5 +1,6 @@
 mod ble_hid;
 mod imu;
+mod mapping;
 
 use ble_hid::{BleMouse, MouseReport};
 use esp_idf_svc::hal::{
@@ -8,13 +9,10 @@ use esp_idf_svc::hal::{
     peripherals::Peripherals,
     units::Hertz,
 };
+use mapping::CursorMapper;
 
 /// 메인 루프 주기 (ms). IMU 샘플링/HID 리포트 주기이기도 하다.
 const LOOP_PERIOD_MS: u32 = 10;
-
-/// 이슈 #3 검증용: 연결되면 커서로 원을 그리는 테스트 패턴.
-/// 커서 매핑(#4)이 들어오면 false로 바꾼다.
-const CURSOR_TEST_PATTERN: bool = true;
 
 fn main() -> anyhow::Result<()> {
     // ESP-IDF 링커 패치 적용 (esp-idf 프로젝트 필수 보일러플레이트)
@@ -41,28 +39,41 @@ fn main() -> anyhow::Result<()> {
     let mut imu = imu::Imu::new(i2c)?;
     log::info!("ICM-42670-P 초기화 완료");
 
+    // 부팅 시 정지 상태 가정하고 자이로 바이어스 캘리브레이션 (약 1.3초)
+    log::info!("자이로 캘리브레이션 중... 보드를 움직이지 마세요");
+    let bias = imu.calibrate_gyro(60, 200)?;
+    log::info!(
+        "캘리브레이션 완료: bias[dps] x={:+.2} y={:+.2} z={:+.2}",
+        bias.x, bias.y, bias.z
+    );
+
+    let mut mapper = CursorMapper::default();
     let mut tick: u32 = 0;
     loop {
         let gyro = imu.gyro_dps()?;
-        let accel = imu.accel_g()?;
 
-        if mouse.connected() && CURSOR_TEST_PATTERN {
-            // 약 3초에 한 바퀴 도는 원 그리기
-            let theta = tick as f32 * 0.02;
+        // 축 매핑: yaw=Z(좌우 회전) → dx, pitch=X(상하 기울임) → dy
+        let (dx, dy) = mapper.update(gyro.z - bias.z, gyro.x - bias.x);
+
+        if mouse.connected() {
             let report = MouseReport {
-                dx: (5.0 * theta.cos()) as i8,
-                dy: (5.0 * theta.sin()) as i8,
+                dx,
+                dy,
                 ..Default::default()
             };
-            mouse.send(&report);
+            // 변화 없는 0 리포트는 보내지 않는다 (BLE 대역폭/전력 절약)
+            if !report.is_zero() {
+                mouse.send(&report);
+            }
         }
 
         // 5초에 한 번 상태 로그 (시리얼이 밀리지 않게)
         if tick % 500 == 0 {
             log::info!(
-                "connected={} | gyro[dps] x={:+8.2} y={:+8.2} z={:+8.2} | accel[g] x={:+6.3} y={:+6.3} z={:+6.3}",
+                "connected={} | gyro-bias[dps] yaw(z)={:+7.2} pitch(x)={:+7.2}",
                 mouse.connected(),
-                gyro.x, gyro.y, gyro.z, accel.x, accel.y, accel.z
+                gyro.z - bias.z,
+                gyro.x - bias.x
             );
         }
 
