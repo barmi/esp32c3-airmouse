@@ -16,9 +16,11 @@ debug = true
 opt-level = "z"
 
 [dependencies]
+anyhow = "1"
 log = "0.4"
 esp-idf-svc = { version = "0.52", features = ["critical-section", "embassy-time-driver", "embassy-sync"] }
 embassy-time = { version = "0.5", features = ["generic-queue-8"] }
+icm42670 = "0.2"
 
 [build-dependencies]
 embuild = "0.33"
