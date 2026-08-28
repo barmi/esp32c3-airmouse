@@ -1,0 +1,15 @@
+[build]
+target = "riscv32imc-esp-espidf"
+
+[target.riscv32imc-esp-espidf]
+linker = "ldproxy"
+runner = "espflash flash --monitor"
+rustflags = ["--cfg", "espidf_time64"]
+
+[unstable]
+build-std = ["std", "panic_abort"]
+
+[env]
+MCU = "esp32c3"
+# ESP-IDF 버전 고정. 첫 빌드 때 프로젝트의 .embuild/ 아래에 자동 다운로드됨.
+ESP_IDF_VERSION = "v5.3.3"
