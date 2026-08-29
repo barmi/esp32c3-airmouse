@@ -48,7 +48,7 @@ fn main() -> anyhow::Result<()> {
     let mut imu = imu::Imu::new(i2c)?;
     log::info!("ICM-42670-P 초기화 완료");
 
-    // 부팅 시 정지 상태 가정하고 자이로 바이어스 캘리브레이션 (약 1.3초)
+    // 부팅 시 정지 상태 가정하고 자이로 바이어스 캘리브레이션 (실측 약 2.6초)
     log::info!("자이로 캘리브레이션 중... 보드를 움직이지 마세요");
     led.set(Status::Calibrating, true);
     let bias = imu.calibrate_gyro(60, 200)?;
