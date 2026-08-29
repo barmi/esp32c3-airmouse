@@ -2,6 +2,7 @@ mod ble_hid;
 mod button;
 mod imu;
 mod mapping;
+mod status_led;
 
 use ble_hid::{BleMouse, MouseReport};
 use esp_idf_svc::hal::{
@@ -11,6 +12,7 @@ use esp_idf_svc::hal::{
     units::Hertz,
 };
 use mapping::CursorMapper;
+use status_led::{Status, StatusLed};
 
 /// 메인 루프 주기 (ms). IMU 샘플링/HID 리포트 주기이기도 하다.
 const LOOP_PERIOD_MS: u32 = 10;
@@ -23,6 +25,10 @@ fn main() -> anyhow::Result<()> {
     log::info!("esp32c3-airmouse: boot OK");
 
     let p = Peripherals::take()?;
+
+    // 상태 표시등 (WS2812, GPIO2)
+    let mut led = StatusLed::new(p.rmt.channel0, p.pins.gpio2)?;
+    led.set(Status::Advertising, true);
 
     // BLE HID 마우스 초기화 및 광고 시작
     let mut mouse = BleMouse::new("ESP32C3 AirMouse")?;
@@ -42,6 +48,7 @@ fn main() -> anyhow::Result<()> {
 
     // 부팅 시 정지 상태 가정하고 자이로 바이어스 캘리브레이션 (약 1.3초)
     log::info!("자이로 캘리브레이션 중... 보드를 움직이지 마세요");
+    led.set(Status::Calibrating, true);
     let bias = imu.calibrate_gyro(60, 200)?;
     log::info!(
         "캘리브레이션 완료: bias[dps] x={:+.2} y={:+.2} z={:+.2}",
@@ -60,6 +67,14 @@ fn main() -> anyhow::Result<()> {
         // 축 매핑: yaw=Z(좌우 회전) → dx, pitch=X(상하 기울임) → dy
         let (dx, dy) = mapper.update(gyro.z - bias.z, gyro.x - bias.x);
         let buttons = if button.update() { 0x01 } else { 0x00 };
+
+        // 상태 표시: 연결되면 초록 상시등, 광고 중이면 파랑 느린 깜빡임
+        if mouse.connected() {
+            led.set(Status::Connected, true);
+        } else {
+            // 1초 주기로 깜빡임 (100틱 = 1초, 앞 절반만 점등)
+            led.set(Status::Advertising, tick % 100 < 50);
+        }
 
         if mouse.connected() {
             let report = MouseReport {

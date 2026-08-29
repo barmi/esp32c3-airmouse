@@ -30,24 +30,52 @@ impl<'d> Imu<'d> {
 
     /// 정지 상태를 가정하고 자이로 바이어스를 측정한다.
     ///
-    /// 전원 인가 직후에는 자이로 스핀업 때문에 포화값이 나오므로
-    /// 앞쪽 `discard`개 샘플은 버리고 `samples`개 평균을 낸다.
+    /// 전원 인가 직후에는 자이로 스핀업 때문에 풀스케일 포화값(±2000dps)이
+    /// 나온다. 포화 샘플이 하나만 평균에 섞여도 바이어스가 10dps 단위로
+    /// 틀어져 커서가 흐르므로, 앞쪽 `discard`개를 버리는 것에 더해
+    /// 정지 상태로 볼 수 없는 샘플은 평균에서 제외한다.
     pub fn calibrate_gyro(&mut self, discard: usize, samples: usize) -> anyhow::Result<F32x3> {
         use esp_idf_svc::hal::delay::FreeRtos;
+
+        /// 정지 상태로 인정하는 각속도 상한(dps). 이 값을 넘는 샘플은
+        /// 스핀업 잔재이거나 사용자가 보드를 건드린 것이다.
+        const REST_LIMIT_DPS: f32 = 20.0;
+        /// 유효 샘플을 모으기 위한 최대 시도 횟수
+        const MAX_ATTEMPTS: usize = 10;
 
         for _ in 0..discard {
             let _ = self.drv.gyro_norm();
             FreeRtos::delay_ms(5);
         }
+
         let (mut sx, mut sy, mut sz) = (0.0f32, 0.0f32, 0.0f32);
-        for _ in 0..samples {
+        let (mut kept, mut rejected) = (0usize, 0usize);
+        for _ in 0..samples * MAX_ATTEMPTS {
+            if kept >= samples {
+                break;
+            }
             let g = self.gyro_dps()?;
-            sx += g.x;
-            sy += g.y;
-            sz += g.z;
+            if g.x.abs() > REST_LIMIT_DPS
+                || g.y.abs() > REST_LIMIT_DPS
+                || g.z.abs() > REST_LIMIT_DPS
+            {
+                rejected += 1;
+            } else {
+                sx += g.x;
+                sy += g.y;
+                sz += g.z;
+                kept += 1;
+            }
             FreeRtos::delay_ms(5);
         }
-        let n = samples as f32;
+
+        if kept == 0 {
+            anyhow::bail!("캘리브레이션 실패: 정지 샘플을 얻지 못함 (보드를 움직이지 마세요)");
+        }
+        if rejected > 0 {
+            log::info!("캘리브레이션: {rejected}개 샘플 제외 (움직임/스핀업)");
+        }
+        let n = kept as f32;
         Ok(F32x3::new(sx / n, sy / n, sz / n))
     }
 

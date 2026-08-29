@@ -24,6 +24,7 @@ esp32-nimble = "0.12"
 icm42670 = "0.2"
 zerocopy = "0.8"
 zerocopy-derive = "0.8"
+ws2812-esp32-rmt-driver = { version = "0.14", features = ["smart-leds-trait"] }
 
 [build-dependencies]
 embuild = "0.33"
