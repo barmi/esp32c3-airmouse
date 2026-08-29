@@ -4,9 +4,12 @@
 
 ```mermaid
 flowchart LR
-    IMU["ICM-42670-P<br/>자이로 (I2C 400kHz)"] --> Bias["바이어스 차감<br/>(부팅 시 캘리브레이션)"]
+    IMU["ICM-42670-P<br/>자이로 (I2C 400kHz)"] --> Bias["바이어스 차감<br/>(캘리브레이션)"]
     Bias --> Map["CursorMapper<br/>데드존 → 게인 → 잔여 누적"]
-    Btn["BOOT 버튼<br/>(30ms 디바운스)"] --> Report
+    Click["좌·우클릭 버튼<br/>(30ms 디바운스)"] --> Report
+    Scroll["스크롤 버튼<br/>(오토리피트)"] --> Report
+    Boot["BOOT 버튼"] --> Recal["재캘리브레이션"]
+    Recal --> Bias
     Map --> Report["HID 마우스 리포트<br/>buttons/dx/dy/wheel"]
     Report --> BLE["BLE HID (NimBLE)<br/>HOGP"]
     BLE --> Host["PC / Mac"]
@@ -21,7 +24,7 @@ flowchart LR
 | [imu.rs](../firmware/src/imu.rs) | ICM-42670-P 설정·읽기, 자이로 바이어스 캘리브레이션 |
 | [mapping.rs](../firmware/src/mapping.rs) | 각속도 → 커서 이동량. **튜닝 상수가 여기 모여 있음** |
 | [ble_hid.rs](../firmware/src/ble_hid.rs) | BLE HID 마우스 — 리포트 디스크립터, 광고, 전송 |
-| [button.rs](../firmware/src/button.rs) | BOOT 버튼 디바운스 |
+| [button.rs](../firmware/src/button.rs) | 버튼 디바운스 + 스크롤 오토리피트 |
 | [status_led.rs](../firmware/src/status_led.rs) | WS2812 상태 표시 |
 
 ## 부팅 순서
@@ -51,6 +54,25 @@ if !report.is_zero() || buttons != prev_buttons {
 ```
 
 이동량이 0인 리포트는 보내지 않아 BLE 대역폭과 전력을 아낍니다. 다만 **버튼 상태가 바뀌면 이동량이 0이어도 반드시 보냅니다.** 뗌(release) 리포트가 누락되면 호스트는 버튼이 계속 눌린 것으로 인식해 드래그가 풀리지 않습니다.
+
+휠은 상대값이라 오토리피트가 발동한 틱에만 ±1이 실리고, 그 외에는 0이라 자동으로 전송에서 빠집니다.
+
+## 버튼
+
+`Button`은 `PinDriver<'d, Input>`를 들고 있는데, 이 타입이 핀 종류를 지우기 때문에 **어느 GPIO를 쓰든 같은 타입**이 됩니다. 덕분에 버튼 5개를 특별한 제네릭 없이 같은 방식으로 다룹니다.
+
+두 가지 상태를 구분해 제공합니다.
+
+- `pressed()` — 누르고 있는 동안 계속 참. 클릭과 드래그에 씁니다.
+- `just_pressed()` — 눌린 순간 한 틱만 참. 재캘리브레이션처럼 한 번만 실행할 동작에 씁니다.
+
+`Repeater`는 스크롤 버튼용 오토리피트입니다. 눌린 순간 즉시 한 칸을 내보내고(톡 누름에 바로 반응), 계속 눌려 있으면 지연 시간 뒤부터 일정 간격으로 반복합니다. 타이머 없이 메인 루프 틱을 세는 방식이라 별도 스레드가 필요 없습니다.
+
+## 현장 재캘리브레이션
+
+BOOT 버튼을 누르면 루프 안에서 바로 `calibrate_gyro`를 다시 돌립니다. 자이로가 이미 워밍업된 상태라 부팅 때(60개)보다 폐기 샘플을 적게(10개) 잡습니다.
+
+이때 **실패해도 앱을 종료하지 않습니다.** 부팅 시 캘리브레이션은 `?`로 전파해 실패를 크게 드러내지만, 버튼으로 부른 재캘리브레이션이 같은 방식으로 실패하면 마우스 자체가 죽어버립니다. 그래서 경고만 남기고 기존 바이어스를 유지합니다.
 
 ## 자이로 캘리브레이션
 

@@ -21,6 +21,16 @@ pub const DEADZONE_DPS: f32 = 2.0;
 pub const YAW_SIGN: f32 = -1.0; // 오른쪽으로 돌리면 커서도 오른쪽
 pub const PITCH_SIGN: f32 = -1.0; // 앞을 들면 커서는 위로 (HID는 +y가 아래)
 
+/// 스크롤 방향. HID는 +가 위(멀어지는 방향)다.
+/// macOS 내추럴 스크롤 등으로 방향이 반대로 느껴지면 -1로 뒤집는다.
+pub const SCROLL_SIGN: i8 = 1;
+
+/// 스크롤 버튼을 누르고 있을 때 연속 스크롤이 시작되기까지의 지연 (ms).
+pub const SCROLL_REPEAT_DELAY_MS: u32 = 300;
+
+/// 연속 스크롤 간격 (ms). 줄이면 빨라진다.
+pub const SCROLL_REPEAT_MS: u32 = 100;
+
 /// 소수점 잔여 누적 매퍼.
 ///
 /// 리포트는 정수(i8)지만 느린 움직임은 리포트당 1카운트 미만이라,

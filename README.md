@@ -2,12 +2,12 @@
 
 [ESP32-C3-DevKit-RUST-2](https://github.com/esp-rs/esp-rust-board) 보드로 만드는 BLE 에어마우스.
 
-손에 들고 움직이면 내장 IMU가 손목 회전을 감지해 페어링된 PC/맥의 커서를 움직입니다. 추가 부품 없이 보드 하나로 동작합니다.
+손에 들고 움직이면 내장 IMU가 손목 회전을 감지해 페어링된 PC/맥의 커서를 움직입니다. 커서 이동은 보드만으로 되고, 클릭과 스크롤은 택트 스위치 4개를 직접 답니다.
 
 ```mermaid
 flowchart LR
     IMU["ICM-42670-P<br/>자이로 (I2C)"] --> Map["바이어스 보정<br/>+ 커서 매핑"]
-    Btn["BOOT 버튼"] --> Report
+    Btn["버튼 4개<br/>클릭 · 스크롤"] --> Report
     Map --> Report["HID 마우스<br/>리포트"]
     Report --> BLE["BLE HID<br/>(NimBLE)"]
     BLE --> Host["PC / Mac"]
@@ -17,7 +17,7 @@ flowchart LR
 
 보드에 전원을 넣고, LED가 **파랑 깜빡임**이 되면 Bluetooth 설정에서 **`ESP32C3 AirMouse`** 를 연결합니다. LED가 **초록**으로 바뀌면 커서가 움직입니다.
 
-USB 커넥터가 모니터를 향하게 쥐고 손목을 좌우/상하로 돌리면 커서가 따라갑니다. **BOOT 버튼**이 좌클릭입니다.
+USB 커넥터가 모니터를 향하게 쥐고 손목을 좌우/상하로 돌리면 커서가 따라갑니다. 클릭과 스크롤은 [직접 배선한 택트 스위치 4개](docs/hardware.md#클릭과-스크롤-버튼-배선)(GPIO3~6)로 하고, 온보드 **BOOT 버튼**은 자이로 재캘리브레이션입니다.
 
 | LED | 의미 |
 |---|---|
@@ -68,7 +68,7 @@ ESP32-C3에는 USB OTG가 없어 USB 유선 마우스로는 동작할 수 없으
         ├── imu.rs           # IMU 읽기 + 자이로 캘리브레이션
         ├── mapping.rs       # 각속도 → 커서 이동 (튜닝 상수)
         ├── ble_hid.rs       # BLE HID 마우스 (HOGP)
-        ├── button.rs        # BOOT 버튼 디바운스 → 좌클릭
+        ├── button.rs        # 버튼 디바운스 + 스크롤 오토리피트
         └── status_led.rs    # WS2812 상태 표시
 ```
 
@@ -86,3 +86,4 @@ ESP32-C3에는 USB OTG가 없어 USB 유선 마우스로는 동작할 수 없으
 | 6 | WS2812 상태 LED | 완료 |
 | 7 | 전원 관리 / 절전 | 예정 |
 | 8 | GitHub Actions CI | 완료 |
+| 9 | 우클릭 · 스크롤 버튼 | 배선 대기 |
