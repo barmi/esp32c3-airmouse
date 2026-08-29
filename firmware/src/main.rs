@@ -1,4 +1,5 @@
 mod ble_hid;
+mod button;
 mod imu;
 mod mapping;
 
@@ -47,25 +48,33 @@ fn main() -> anyhow::Result<()> {
         bias.x, bias.y, bias.z
     );
 
+    // BOOT 버튼(GPIO9)을 좌클릭으로 사용
+    let mut button = button::Button::new(p.pins.gpio9)?;
+
     let mut mapper = CursorMapper::default();
+    let mut prev_buttons = 0u8;
     let mut tick: u32 = 0;
     loop {
         let gyro = imu.gyro_dps()?;
 
         // 축 매핑: yaw=Z(좌우 회전) → dx, pitch=X(상하 기울임) → dy
         let (dx, dy) = mapper.update(gyro.z - bias.z, gyro.x - bias.x);
+        let buttons = if button.update() { 0x01 } else { 0x00 };
 
         if mouse.connected() {
             let report = MouseReport {
+                buttons,
                 dx,
                 dy,
                 ..Default::default()
             };
-            // 변화 없는 0 리포트는 보내지 않는다 (BLE 대역폭/전력 절약)
-            if !report.is_zero() {
+            // 버튼 상태가 바뀐 리포트는 이동량이 0이어도 반드시 보낸다
+            // (누름/뗌이 모두 전달되어야 클릭과 드래그가 성립한다)
+            if !report.is_zero() || buttons != prev_buttons {
                 mouse.send(&report);
             }
         }
+        prev_buttons = buttons;
 
         // 5초에 한 번 상태 로그 (시리얼이 밀리지 않게)
         if tick % 500 == 0 {
