@@ -26,3 +26,10 @@ ESP32-C3-DevKit-RUST-2(esp-rust-board) 기반 BLE HID 에어마우스. Rust std(
 - WS2812=GPIO2, 단색 LED=GPIO10, BOOT 버튼=GPIO9 (active-low, 부팅 스트래핑 핀)
 - 배터리 전압 측정 회로 없음 (MCP73831은 충전만 지원)
 - sdkconfig.defaults에 NimBLE가 활성화되어 있다 (esp32-nimble 크레이트용)
+- 자이로 축: **yaw(좌우)=Z, pitch(상하)=X, roll=Y(미사용)** — USB 커넥터가 앞을 향하게 쥔 기준
+- 전원 인가 직후 자이로는 풀스케일 포화값(±2000dps)을 뱉는다. 캘리브레이션은 앞 샘플을 버리고 |ω|>20dps 샘플도 제외해야 한다 (안 하면 바이어스가 수십 dps 틀어져 커서가 흐른다)
+
+## 주의
+
+- `ws2812-esp32-rmt-driver` 0.14는 esp-idf-hal의 `rmt-legacy`를 강제하므로 구 RMT API(CHANNEL0) 사용이 불가피하다. 관련 `#[allow(deprecated)]`는 이 이유이며, 드라이버가 신규 API로 옮겨가면 제거한다.
+- CI가 `cargo clippy -- -D warnings`로 막고 있으니 경고를 남기지 말 것.

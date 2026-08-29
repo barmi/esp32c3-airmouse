@@ -3,4 +3,6 @@
 # fchmodat/AT_FDCWD 사용을 libc espidf가 아직 지원하지 않음). 해당 변경
 # 직전 날짜로 고정. libc가 따라잡으면 최신 nightly로 되돌릴 수 있음.
 channel = "nightly-2026-07-20"
-components = ["rust-src"]
+# rustfmt/clippy는 CI 검사 단계가 요구한다. 고정 nightly에는 기본 포함되지
+# 않으므로 명시해야 로컬과 CI가 같은 도구를 쓴다.
+components = ["rust-src", "rustfmt", "clippy"]

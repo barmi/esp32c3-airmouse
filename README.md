@@ -79,30 +79,55 @@ cargo run
 .
 ├── README.md
 ├── CLAUDE.md
+├── .github/workflows/ci.yml # push/PR 빌드 검증 (fmt + clippy + release build)
 └── firmware/                # Rust 펌웨어 (cargo 프로젝트 루트 — 빌드는 여기서)
     ├── .cargo/config.toml   # 타겟(riscv32imc-esp-espidf), 링커, 러너, ESP-IDF 버전 고정
-    ├── rust-toolchain.toml  # nightly + rust-src
+    ├── rust-toolchain.toml  # nightly 고정 + rust-src
     ├── sdkconfig.defaults   # ESP-IDF 설정 (NimBLE 활성화 포함)
     ├── build.rs             # embuild 연동
-    └── src/main.rs
+    └── src/
+        ├── main.rs          # 초기화 + 100Hz 메인 루프
+        ├── imu.rs           # ICM-42670-P 읽기 + 자이로 캘리브레이션
+        ├── mapping.rs       # 각속도 → 커서 이동 (감도/데드존 상수)
+        ├── ble_hid.rs       # BLE HID 마우스 (HOGP)
+        ├── button.rs        # BOOT 버튼 디바운스 → 좌클릭
+        └── status_led.rs    # WS2812 상태 표시
 ```
 
 이후 케이스 도면(`hardware/`)이나 상세 문서(`docs/`)가 생기면 루트에 같은 레벨로 추가합니다.
+
+## 상태 LED
+
+| 색 | 의미 |
+|---|---|
+| 주황 | 자이로 캘리브레이션 중 (보드를 움직이지 마세요) |
+| 파랑 깜빡임 | BLE 광고 중 (호스트 미연결) |
+| 초록 | 연결됨 — 정상 동작 |
+
+## 튜닝
+
+커서 감도와 방향은 [firmware/src/mapping.rs](firmware/src/mapping.rs) 상단 상수로 조정합니다.
+
+| 상수 | 기본값 | 역할 |
+|---|---|---|
+| `GAIN` | 0.18 | 감도. 커서가 둔하면 올리고, 과하면 내립니다 |
+| `DEADZONE_DPS` | 2.0 | 정지 시 드리프트/손떨림 무시 문턱 |
+| `YAW_SIGN` / `PITCH_SIGN` | -1.0 | 이동 방향이 반대면 부호를 뒤집습니다 |
 
 ## 로드맵
 
 작업은 [GitHub 이슈](https://github.com/barmi/esp32c3-airmouse/issues) 단위로 진행합니다.
 
-| 단계 | 내용 |
-|---|---|
-| 1 | 개발 환경 구축 및 Hello World 플래싱 |
-| 2 | IMU(ICM-42670-P) 데이터 읽기 |
-| 3 | BLE HID 마우스 프로파일 (HOGP) |
-| 4 | 모션 → 커서 매핑 (센서 퓨전/감도 튜닝) |
-| 5 | 버튼 클릭 |
-| 6 | WS2812 상태 LED |
-| 7 | 전원 관리 / 절전 |
-| 8 | GitHub Actions CI |
+| 단계 | 내용 | 상태 |
+|---|---|---|
+| 1 | 개발 환경 구축 및 Hello World 플래싱 | 완료 |
+| 2 | IMU(ICM-42670-P) 데이터 읽기 | 완료 |
+| 3 | BLE HID 마우스 프로파일 (HOGP) | 완료 |
+| 4 | 모션 → 커서 매핑 (캘리브레이션/감도 튜닝) | 완료 |
+| 5 | 버튼 클릭 | 완료 |
+| 6 | WS2812 상태 LED | 완료 |
+| 7 | 전원 관리 / 절전 | 예정 |
+| 8 | GitHub Actions CI | 완료 |
 
 ## 참고 자료
 
