@@ -1,8 +1,5 @@
 use esp_idf_svc::hal::i2c::I2cDriver;
-use icm42670::{
-    accelerometer::{vector::F32x3, Accelerometer},
-    Address, GyroOdr, GyroRange, Icm42670, PowerMode,
-};
+use icm42670::{accelerometer::vector::F32x3, Address, GyroOdr, GyroRange, Icm42670, PowerMode};
 
 /// ICM-42670-P 래퍼.
 ///
@@ -17,7 +14,8 @@ pub struct Imu<'d> {
 impl<'d> Imu<'d> {
     pub fn new(i2c: I2cDriver<'d>) -> anyhow::Result<Self> {
         let mut drv = Icm42670::new(i2c, Address::Primary).map_err(err)?;
-        drv.set_power_mode(PowerMode::SixAxisLowNoise).map_err(err)?;
+        drv.set_power_mode(PowerMode::SixAxisLowNoise)
+            .map_err(err)?;
         drv.set_gyro_range(GyroRange::Deg2000).map_err(err)?;
         drv.set_gyro_odr(GyroOdr::Hz200).map_err(err)?;
         Ok(Self { drv })
@@ -77,11 +75,6 @@ impl<'d> Imu<'d> {
         }
         let n = kept as f32;
         Ok(F32x3::new(sx / n, sy / n, sz / n))
-    }
-
-    /// 가속도 (g)
-    pub fn accel_g(&mut self) -> anyhow::Result<F32x3> {
-        self.drv.accel_norm().map_err(err)
     }
 }
 

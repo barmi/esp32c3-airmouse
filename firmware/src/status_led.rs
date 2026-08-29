@@ -1,3 +1,7 @@
+// ws2812-esp32-rmt-driver 0.14가 esp-idf-hal의 `rmt-legacy` 피처를 강제하므로
+// 구 RMT API(CHANNEL0)를 쓸 수밖에 없다. 드라이버가 신규 API로 옮겨가면 제거.
+#![allow(deprecated)]
+
 use esp_idf_svc::hal::{gpio::Gpio2, rmt::CHANNEL0};
 use ws2812_esp32_rmt_driver::{Ws2812Esp32Rmt, RGB8};
 

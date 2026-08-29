@@ -26,7 +26,9 @@ fn main() -> anyhow::Result<()> {
 
     let p = Peripherals::take()?;
 
-    // 상태 표시등 (WS2812, GPIO2)
+    // 상태 표시등 (WS2812, GPIO2).
+    // channel0은 ws2812 드라이버가 요구하는 구 RMT API — status_led.rs 주석 참고.
+    #[allow(deprecated)]
     let mut led = StatusLed::new(p.rmt.channel0, p.pins.gpio2)?;
     led.set(Status::Advertising, true);
 
@@ -52,7 +54,9 @@ fn main() -> anyhow::Result<()> {
     let bias = imu.calibrate_gyro(60, 200)?;
     log::info!(
         "캘리브레이션 완료: bias[dps] x={:+.2} y={:+.2} z={:+.2}",
-        bias.x, bias.y, bias.z
+        bias.x,
+        bias.y,
+        bias.z
     );
 
     // BOOT 버튼(GPIO9)을 좌클릭으로 사용

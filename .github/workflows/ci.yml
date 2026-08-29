@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: firmware
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ESP-IDF 빌드 시스템이 요구하는 네이티브 도구.
+      # 나머지 툴체인(RISC-V GCC 등)은 esp-idf-sys가 .embuild/에 직접 받는다.
+      - name: Install ESP-IDF build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            git wget flex bison gperf cmake ninja-build ccache \
+            libffi-dev libssl-dev dfu-util libusb-1.0-0
+
+      # 툴체인 채널/컴포넌트는 firmware/rust-toolchain.toml이 결정한다.
+      # (espidf 타겟 std 빌드 문제로 nightly가 특정 날짜에 고정되어 있음)
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            firmware/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('firmware/Cargo.lock', 'firmware/rust-toolchain.toml') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      # ESP-IDF 소스와 크로스 툴체인은 수 GB라 캐시가 없으면 매 실행 10분 이상 걸린다.
+      # sdkconfig.defaults가 바뀌면 재구성이 필요하므로 키에 포함한다.
+      - name: Cache ESP-IDF
+        uses: actions/cache@v4
+        with:
+          path: |
+            firmware/.embuild
+            ~/.espressif
+          key: espidf-${{ runner.os }}-${{ hashFiles('firmware/.cargo/config.toml', 'firmware/sdkconfig.defaults') }}
+          restore-keys: espidf-${{ runner.os }}-
+
+      - name: Install ldproxy
+        run: cargo install ldproxy --locked
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Clippy
+        run: cargo clippy --release -- -D warnings

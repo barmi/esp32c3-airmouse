@@ -42,7 +42,7 @@ const HID_REPORT_DESCRIPTOR: &[u8] = hid!(
 
 /// HID 마우스 입력 리포트. 디스크립터의 필드 순서와 일치해야 한다.
 #[derive(IntoBytes, Immutable, Clone, Copy, Default)]
-#[repr(packed)]
+#[repr(C, packed)]
 pub struct MouseReport {
     /// bit0=좌클릭, bit1=우클릭, bit2=휠클릭
     pub buttons: u8,
@@ -117,6 +117,9 @@ impl BleMouse {
     }
 
     pub fn send(&mut self, report: &MouseReport) {
-        self.input_mouse.lock().set_value(report.as_bytes()).notify();
+        self.input_mouse
+            .lock()
+            .set_value(report.as_bytes())
+            .notify();
     }
 }
