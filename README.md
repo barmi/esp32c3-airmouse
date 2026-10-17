@@ -38,6 +38,8 @@ cd firmware && cargo run
 
 `cargo install ldproxy espflash`가 선행되어야 하며, 첫 빌드는 ESP-IDF를 내려받느라 10분 이상 걸립니다. 자세한 내용은 [개발 가이드](docs/development.md)를 보세요.
 
+펌웨어 버전은 `firmware/Cargo.toml`을 따르고, 부팅 로그와 상태 로그에 `0.1.0+<커밋>` 형태로 찍힙니다 ([버전 규칙](docs/development.md#버전)).
+
 ## 문서
 
 | 문서 | 내용 |

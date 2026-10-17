@@ -27,6 +27,19 @@ use power::{PowerPolicy, PowerState, SleepButton, SleepGesture, IDLE_LOOP_PERIOD
 use status_led::{Status, StatusLed};
 use std::time::Instant;
 
+// ESP-IDF 앱 정보(부트로더 로그와 바이너리 헤더의 버전·빌드 시각)를 Cargo.toml에서 채운다.
+// 정의하지 않으면 ESP-IDF를 처음 구성할 때 캐시된 값이 계속 남는다. 매크로가 esp-idf-sys의
+// cfg 조건을 이 크레이트 안에서 펼쳐 unexpected_cfgs 경고가 나므로 모듈로 감싸 그 범위에서만
+// 끈다 (심볼은 #[no_mangle]이라 모듈 안에 있어도 이름이 같다).
+#[allow(unexpected_cfgs)]
+mod app_desc {
+    // 중괄호 형식이어야 빌드 날짜와 시각이 제자리에 들어간다 (괄호 형식은 하위 호환으로 뒤바꿈)
+    esp_idf_svc::sys::esp_app_desc! {}
+}
+
+/// 펌웨어 버전: "0.1.0"(릴리스 태그) 또는 "0.1.0+<커밋>[-dirty]" (build.rs)
+const FW_VERSION: &str = env!("FW_VERSION");
+
 /// 메인 루프 주기 (ms). IMU 샘플링/HID 리포트 주기이기도 하다.
 const LOOP_PERIOD_MS: u32 = 10;
 
@@ -125,7 +138,7 @@ fn main() -> anyhow::Result<()> {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
 
-    log::info!("esp32c3-airmouse: boot OK");
+    log::info!("esp32c3-airmouse {FW_VERSION}");
 
     // 전원 관리: CPU 클럭 자동 조절 + 틱 사이 자동 라이트 슬립 (#7).
     // 실패해도 마우스 기능에는 지장이 없으므로 절전 없이 계속한다.
@@ -621,7 +634,7 @@ fn main() -> anyhow::Result<()> {
             };
             let loop_hz = period_ticks as u64 * 1000 / (now_ms - period_start_ms).max(1);
             log::info!(
-                "connected={} 모드={} 전원={} 루프={loop_hz}Hz BLE={} USB={} 부팅={boot_summary} | yaw={:+6.2} pitch={:+6.2} dps | 기울기={:+5.1}° | 각도 yaw={:+6.1}° el={:+5.1}° | bias=({:+.2},{:+.2},{:+.2}) 정지판정={}%",
+                "connected={} 모드={} 전원={} 루프={loop_hz}Hz BLE={} USB={} 부팅={boot_summary} 버전={FW_VERSION} | yaw={:+6.2} pitch={:+6.2} dps | 기울기={:+5.1}° | 각도 yaw={:+6.1}° el={:+5.1}° | bias=({:+.2},{:+.2},{:+.2}) 정지판정={}%",
                 connected,
                 mode.name(),
                 power.name(),
