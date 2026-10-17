@@ -110,8 +110,9 @@ fn main() -> anyhow::Result<()> {
     // 외부 택트 스위치. 각각 GND로 당기는 배선이며 내부 풀업을 쓴다.
     let mut btn_left = Button::new(p.pins.gpio3)?;
     let mut btn_right = Button::new(p.pins.gpio4)?;
-    let mut btn_scroll_up = Button::new(p.pins.gpio5)?;
-    let mut btn_scroll_down = Button::new(p.pins.gpio6)?;
+    // 스크롤 ↑=GPIO6, ↓=GPIO5: 배선 후 실사용에서 정한 배정 (#9)
+    let mut btn_scroll_up = Button::new(p.pins.gpio6)?;
+    let mut btn_scroll_down = Button::new(p.pins.gpio5)?;
     // 온보드 BOOT 버튼: 짧게 = 재캘리브레이션(상대) / 리센터(절대), 길게 = 모드 전환
     let mut btn_boot = Button::new(p.pins.gpio9)?;
     let mut boot_gesture = HoldGesture::new(BOOT_LONG_MS, LOOP_PERIOD_MS);

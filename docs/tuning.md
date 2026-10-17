@@ -16,7 +16,7 @@ cd firmware && cargo run
 | `DEADZONE_DPS` | 2.0 | 이 값 미만의 각속도는 무시 (드리프트/손떨림 차단) |
 | `YAW_SIGN` | -1.0 | 좌우 방향 부호 |
 | `PITCH_SIGN` | -1.0 | 상하 방향 부호 |
-| `SCROLL_SIGN` | 1 | 스크롤 방향 부호 |
+| `SCROLL_SIGN` | -1 | 스크롤 방향 부호 (macOS 자연스러운 스크롤 기준) |
 | `SCROLL_REPEAT_DELAY_MS` | 300 | 스크롤 버튼을 누르고 있을 때 연속 스크롤이 시작되기까지 |
 | `SCROLL_REPEAT_MS` | 100 | 연속 스크롤 간격 |
 | `ABS_FILTER_MIN_CUTOFF_HZ` | 1.0 | 절대 모드: 정지 시 떨림 제거 강도 |
@@ -77,18 +77,20 @@ pub const DEADZONE_DPS: f32 = 2.0;
 스크롤 버튼은 톡 누르면 한 칸, 계속 누르고 있으면 연속으로 움직입니다. 키보드 키 반복과 같은 방식입니다.
 
 ```rust
-pub const SCROLL_SIGN: i8 = 1;
+pub const SCROLL_SIGN: i8 = -1;
 pub const SCROLL_REPEAT_DELAY_MS: u32 = 300;
 pub const SCROLL_REPEAT_MS: u32 = 100;
 ```
 
+기본값 `-1`은 macOS 기본 설정에 맞춘 값입니다. macOS는 **자연스러운 스크롤**이 켜져 있으면(기본값) 마우스 휠 방향도 뒤집기 때문에, HID 기준으로 "위(+1)"를 보내면 문서가 아래로 갑니다. 펌웨어는 호스트의 설정을 알 수 없으므로 이 상수로 맞춥니다.
+
 | 증상 | 조정 |
 |---|---|
-| 스크롤 방향이 반대 (macOS 내추럴 스크롤 등) | `SCROLL_SIGN`을 `-1`로 |
+| 스크롤 방향이 반대 (자연스러운 스크롤을 끈 맥, Windows, Linux) | `SCROLL_SIGN`을 `1`로 |
 | 연속 스크롤이 너무 느리다 | `SCROLL_REPEAT_MS`를 줄입니다 (60~80) |
 | 살짝 누르려 했는데 연속으로 넘어간다 | `SCROLL_REPEAT_DELAY_MS`를 늘립니다 (400~500) |
 
-한 번에 여러 칸씩 움직이고 싶다면 `SCROLL_SIGN`을 `2`, `3`으로 키우는 방법도 있지만, 대부분의 OS가 자체 스크롤 가속을 적용하므로 반복 간격을 줄이는 편이 자연스럽습니다.
+한 번에 여러 칸씩 움직이고 싶다면 `SCROLL_SIGN`을 `-2`, `-3`으로(부호는 그대로) 키우는 방법도 있지만, 대부분의 OS가 자체 스크롤 가속을 적용하므로 반복 간격을 줄이는 편이 자연스럽습니다.
 
 ## 절대 좌표 모드 조정
 

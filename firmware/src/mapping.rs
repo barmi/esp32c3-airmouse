@@ -21,9 +21,10 @@ pub const DEADZONE_DPS: f32 = 2.0;
 pub const YAW_SIGN: f32 = -1.0; // 오른쪽으로 돌리면 커서도 오른쪽
 pub const PITCH_SIGN: f32 = -1.0; // 앞을 들면 커서는 위로 (HID는 +y가 아래)
 
-/// 스크롤 방향. HID는 +가 위(멀어지는 방향)다.
-/// macOS 내추럴 스크롤 등으로 방향이 반대로 느껴지면 -1로 뒤집는다.
-pub const SCROLL_SIGN: i8 = 1;
+/// 스크롤 방향. HID 휠은 +가 위(멀어지는 방향)지만, macOS는 '자연스러운 스크롤'이
+/// 켜져 있으면(기본값) 휠 방향을 뒤집는다. 그래서 -1이어야 ↑ 버튼에서 문서 위쪽이 보인다.
+/// 자연스러운 스크롤을 끈 맥이나 Windows·Linux에서는 1로 바꾼다.
+pub const SCROLL_SIGN: i8 = -1;
 
 /// 스크롤 버튼을 누르고 있을 때 연속 스크롤이 시작되기까지의 지연 (ms).
 pub const SCROLL_REPEAT_DELAY_MS: u32 = 300;
