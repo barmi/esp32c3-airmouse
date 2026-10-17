@@ -13,3 +13,28 @@ CONFIG_BT_NIMBLE_NVS_PERSIST=y
 
 # NimBLE INFO 로그가 notify마다 찍혀 시리얼을 도배하므로 WARNING으로 낮춘다.
 CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y
+
+# ---------------------------------------------------------------- 전원 관리 (#7)
+# CPU 클럭 자동 조절 + 틱 사이 자동 라이트 슬립. BLE 연결은 유지된다.
+CONFIG_PM_ENABLE=y
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
+# 라이트 슬립은 예상 대기 시간이 FREERTOS_IDLE_TIME_BEFORE_SLEEP(기본 3틱) 이상일 때만
+# 들어간다. 기본 100Hz면 3틱 = 30ms라 10ms 루프에서는 한 번도 잠들지 못하므로 1kHz로 올린다.
+CONFIG_FREERTOS_HZ=1000
+# 잠들고 깨는 코드를 IRAM에 두어 한 번 잘 때마다 수백 µs씩 더 잔다.
+CONFIG_PM_SLP_IRAM_OPT=y
+CONFIG_PM_RTOS_IDLE_OPT=y
+
+# BLE 컨트롤러 모뎀 슬립. 보드의 32kHz 크리스털이 미실장(회로도 Y1 DNP)이라 메인
+# 크리스털을 저전력 클럭으로 쓰고, 라이트 슬립 중에도 켜 둔다 (ESP-IDF BLE 절전 예제의
+# sdkconfig.40m.esp32c3와 같다. 라이트 슬립 바닥 전류 약 2.3mA).
+CONFIG_BT_CTRL_MODEM_SLEEP=y
+CONFIG_BT_CTRL_MODEM_SLEEP_MODE_1=y
+CONFIG_BT_CTRL_LPCLK_SEL_MAIN_XTAL=y
+CONFIG_BT_CTRL_MAIN_XTAL_PU_DURING_LIGHT_SLEEP=y
+# 예제에 있는 CONFIG_ESP_PHY_MAC_BB_PD(라이트 슬립 중 무선 MAC·베이스밴드 전원 차단)는
+# 켜지 않는다. ESP-IDF 설명대로 효과가 작고 RAM을 더 쓴다.
+
+# USB로 컴퓨터에 연결된 동안은 라이트 슬립을 막는다. USB 시리얼은 라이트 슬립 중에
+# 동작하지 않아 시리얼 모니터와 플래시가 끊기기 때문이다. 충전기·배터리에서는 잔다.
+CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION=y

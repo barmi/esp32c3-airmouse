@@ -4,6 +4,8 @@ mod imu;
 mod mapping;
 mod orientation;
 mod pointer;
+mod power;
+mod sleep;
 mod status_led;
 
 use ble_hid::{BleMouse, MouseReport};
@@ -14,12 +16,14 @@ use esp_idf_svc::hal::{
     peripherals::Peripherals,
     units::Hertz,
 };
+use esp_idf_svc::sys;
 use mapping::{
     CursorMapper, ABS_FILTER_BETA, ABS_FILTER_D_CUTOFF_HZ, ABS_FILTER_MIN_CUTOFF_HZ,
     ABS_YAW_GATE_DPS, SCROLL_REPEAT_DELAY_MS, SCROLL_REPEAT_MS, SCROLL_SIGN,
 };
-use orientation::{BiasTracker, Orientation};
+use orientation::{BiasTracker, Orientation, V3};
 use pointer::{AngleTracker, ScreenCal, TrackerConfig};
+use power::{PowerPolicy, PowerState, IDLE_LOOP_PERIOD_MS, MOTION_DPS};
 use status_led::{Status, StatusLed};
 use std::time::Instant;
 
@@ -27,8 +31,8 @@ use std::time::Instant;
 const LOOP_PERIOD_MS: u32 = 10;
 
 /// 실측 루프 주기의 상한(초). 재캘리브레이션처럼 루프가 오래 멈췄던 직후
-/// 한 틱의 적분이 튀지 않도록 막는다.
-const MAX_DT_S: f32 = 0.05;
+/// 한 틱의 적분이 튀지 않도록 막는다. 대기 모드의 루프 주기(50ms)보다는 커야 한다.
+const MAX_DT_S: f32 = 0.1;
 
 /// 캘리브레이션에서 받아들이는 자이로 흔들림 폭 상한(dps). 넘으면 보드가 움직인
 /// 것으로 보고 실패한다 (책상 위 잡음은 0.5 안팎).
@@ -52,6 +56,46 @@ const PRESS_LOOKBACK_TICKS: usize = 5;
 /// 절대 좌표가 이만큼 이상 바뀌어야 보낸다 (0..=32767 단위). 필터가 수렴한 뒤
 /// 미세한 흔들림으로 매 틱 전송되는 것을 막는다. 2면 1920px 화면에서 0.1px 수준.
 const ABS_SEND_THRESHOLD: u16 = 2;
+
+/// 상태 로그 주기 (ms)
+const STATUS_LOG_MS: u64 = 5_000;
+
+/// 절대 모드 진단 로그 주기 (ms)
+const ABS_LOG_MS: u64 = 500;
+
+/// 연결되고 이만큼 지난 뒤 절전용 연결 파라미터를 요청한다 (ms). 연결 직후에는
+/// 호스트가 서비스 탐색과 암호화를 진행하는 중이다.
+const CONN_PARAM_DELAY_MS: u64 = 5_000;
+
+/// 메인 루프를 고정 주기로 돌린다.
+///
+/// "N ms 쉬기"로 쉬면 처리 시간과 라이트 슬립에서 깨어나는 시간이 매 틱 더해진다.
+/// 라이트 슬립을 켜자 10ms 루프가 실제로는 15.8ms(63Hz)로 돌아, 틱으로 세는 스크롤
+/// 반복과 틱당 이동량으로 보내는 커서가 1.58배 느려졌다. 직전 기상 시각을 기준으로
+/// 쉬면 그 시간이 주기 안에 흡수된다.
+struct LoopTimer {
+    last_wake: sys::TickType_t,
+}
+
+impl LoopTimer {
+    fn new() -> Self {
+        Self {
+            last_wake: unsafe { sys::xTaskGetTickCount() },
+        }
+    }
+
+    /// 직전 기상 시각에서 `period_ms` 뒤까지 쉰다. 한 번 조금 늦은 것은 다음 틱에서
+    /// 따라잡지만, 재캘리브레이션처럼 두 주기 넘게 밀렸으면 밀린 틱을 몰아서 돌지
+    /// 않도록 지금부터 다시 센다.
+    fn wait(&mut self, period_ms: u32) {
+        let period = period_ms * sys::configTICK_RATE_HZ / 1000;
+        let now = unsafe { sys::xTaskGetTickCount() };
+        if now.wrapping_sub(self.last_wake) >= 2 * period {
+            self.last_wake = now;
+        }
+        unsafe { sys::xTaskDelayUntil(&mut self.last_wake, period) };
+    }
+}
 
 /// 포인팅 모드
 #[derive(Clone, Copy)]
@@ -83,6 +127,16 @@ fn main() -> anyhow::Result<()> {
 
     log::info!("esp32c3-airmouse: boot OK");
 
+    // 전원 관리: CPU 클럭 자동 조절 + 틱 사이 자동 라이트 슬립 (#7).
+    // 실패해도 마우스 기능에는 지장이 없으므로 절전 없이 계속한다.
+    if let Err(e) = sleep::init() {
+        log::warn!("전원 관리 설정 실패: {e} — 절전 없이 계속합니다");
+    }
+    let woke = sleep::woke_from_deep_sleep();
+    if woke {
+        log::info!("딥슬립에서 깨어남 (버튼)");
+    }
+
     let p = Peripherals::take()?;
 
     // 상태 표시등 (WS2812, GPIO2).
@@ -90,6 +144,7 @@ fn main() -> anyhow::Result<()> {
     #[allow(deprecated)]
     let mut led = StatusLed::new(p.rmt.channel0, p.pins.gpio2)?;
     led.set(Status::Advertising, true);
+    sleep::keep_led_line_driven();
 
     // BLE HID 마우스 초기화 및 광고 시작
     let mut mouse = BleMouse::new("ESP32C3 AirMouse")?;
@@ -120,36 +175,21 @@ fn main() -> anyhow::Result<()> {
     let mut up_repeat = Repeater::new(SCROLL_REPEAT_DELAY_MS, SCROLL_REPEAT_MS, LOOP_PERIOD_MS);
     let mut down_repeat = Repeater::new(SCROLL_REPEAT_DELAY_MS, SCROLL_REPEAT_MS, LOOP_PERIOD_MS);
 
-    // 부팅 시 정지 상태 가정하고 자이로 바이어스 캘리브레이션 (실측 약 2.6초).
-    // 움직임이 감지되면 다시 시도하고, 끝내 실패하면 검사 없이 받아들인다.
-    log::info!("자이로 캘리브레이션 중... 보드를 움직이지 마세요");
-    led.set(Status::Calibrating, true);
-    let mut boot_bias = None;
-    for attempt in 1..=BOOT_CAL_ATTEMPTS {
-        let discard = if attempt == 1 { 60 } else { 10 };
-        match imu.calibrate_gyro(discard, 200, CAL_MAX_SPREAD_DPS) {
-            Ok(b) => {
-                boot_bias = Some(b);
-                break;
-            }
-            Err(e) => log::warn!("{e} — 다시 시도 ({attempt}/{BOOT_CAL_ATTEMPTS})"),
-        }
-    }
-    let mut bias = match boot_bias {
-        Some(b) => b,
-        None => {
-            log::warn!(
-                "정지 상태를 얻지 못해 그대로 진행합니다. 보드를 내려놓으면 자동 보정됩니다"
+    let mut bias = match sleep::saved_bias() {
+        // 딥슬립을 깨운 사람은 보드를 손에 들고 있어 캘리브레이션이 실패한다. 잠들기 전
+        // 값을 쓰고, 남는 오차는 보드를 내려놓았을 때 바이어스 추적이 바로잡는다.
+        Some(saved) => {
+            imu.warm_up();
+            log::info!(
+                "잠들기 전 자이로 영점 사용: bias[dps] x={:+.2} y={:+.2} z={:+.2}",
+                saved.x,
+                saved.y,
+                saved.z
             );
-            imu.calibrate_gyro(10, 200, f32::INFINITY)?
+            saved
         }
+        None => calibrate_at_boot(&mut imu, &mut led)?,
     };
-    log::info!(
-        "캘리브레이션 완료: bias[dps] x={:+.2} y={:+.2} z={:+.2}",
-        bias.x,
-        bias.y,
-        bias.z
-    );
 
     let mut mapper = CursorMapper::default();
     let mut orient = Orientation::default();
@@ -173,8 +213,26 @@ fn main() -> anyhow::Result<()> {
     let mut last_tick = Instant::now();
     let mut prev_buttons = 0u8;
     let mut prev_btn_state = 0u8;
-    let mut tick: u32 = 0;
+    // 절전 (#7)
+    let started = Instant::now();
+    let mut policy = PowerPolicy::new(0);
+    let mut power = PowerState::Active;
+    let mut usb_host = sleep::usb_host_connected();
+    let mut was_connected = false;
+    // 딥슬립을 깨운 버튼은 손을 뗄 때까지 호스트로 보내지 않는다
+    let mut wake_guard = woke;
+    let mut connected_since: Option<u64> = None;
+    let mut conn_params_requested = false;
+    let mut next_status_ms = 0u64;
+    let mut next_abs_log_ms = 0u64;
+    // 상태 로그 주기 동안 돈 틱 수 (정지판정 비율의 분모, 루프 주파수)
+    let mut period_ticks = 0u32;
+    let mut period_start_ms = 0u64;
+    let mut imu_errors = 0u32;
+    let mut timer = LoopTimer::new();
     loop {
+        let now_ms = started.elapsed().as_millis() as u64;
+
         // ------------------------------------------------------------ 입력
         btn_left.update();
         btn_right.update();
@@ -206,8 +264,18 @@ fn main() -> anyhow::Result<()> {
         let dt = now.duration_since(last_tick).as_secs_f32().min(MAX_DT_S);
         last_tick = now;
 
-        let raw = imu.gyro_dps()?;
-        let accel = imu.accel_g()?;
+        // I2C 읽기가 한 번 실패했다고 마우스가 멈추지 않도록 그 틱만 건너뛴다
+        let (raw, accel) = match (imu.gyro_dps(), imu.accel_g()) {
+            (Ok(g), Ok(a)) => (g, a),
+            (Err(e), _) | (_, Err(e)) => {
+                imu_errors += 1;
+                if imu_errors == 1 || imu_errors % 100 == 0 {
+                    log::warn!("IMU 읽기 실패 ({imu_errors}회): {e}");
+                }
+                FreeRtos::delay_ms(LOOP_PERIOD_MS);
+                continue;
+            }
+        };
         if bias_tracker.update(raw, &mut bias, accel) {
             still_ticks += 1;
         }
@@ -340,12 +408,67 @@ fn main() -> anyhow::Result<()> {
             swallow_left = false;
         }
 
+        // ------------------------------------------------------------ 절전
+        // 디바운스 전 핀도 본다: 대기 모드(50ms 주기)에서 누르는 즉시 활성으로 돌아와
+        // 디바운스를 10ms 주기로 마치게 한다.
+        let any_button = [
+            &btn_left,
+            &btn_right,
+            &btn_scroll_up,
+            &btn_scroll_down,
+            &btn_boot,
+        ]
+        .iter()
+        .any(|b| b.pressed() || b.raw_pressed());
+        if wake_guard && !any_button {
+            wake_guard = false;
+        }
+        let connected = mouse.connected();
+        let usb_now = sleep::usb_host_connected();
+        let calibrating = matches!(mode, Mode::CalTopLeft | Mode::CalBottomRight { .. });
+        // USB를 꽂거나 뺀 순간과 연결된 순간도 사용으로 본다. USB를 빼자마자 딥슬립에
+        // 들거나, 연결됐는데 LED가 바로 꺼져 연결됐는지 모르는 일이 없도록.
+        let motion = gyro.norm();
+        let usb_changed = usb_now != usb_host;
+        let conn_changed = connected != was_connected;
+        let active =
+            any_button || motion > MOTION_DPS || calibrating || usb_changed || conn_changed;
+        usb_host = usb_now;
+        was_connected = connected;
+        let state = policy.update(now_ms, active, connected, !usb_host && !calibrating);
+        if state != power {
+            // 깨어난 이유를 남긴다. 책상 진동 같은 것에 자꾸 깨면 딥슬립 타이머가
+            // 계속 처음부터 다시 시작한다.
+            if state == PowerState::Active {
+                log::info!(
+                    "전원: {} → {} (버튼={any_button} |ω|={motion:.1}dps USB변화={usb_changed} 연결변화={conn_changed})",
+                    power.name(),
+                    state.name()
+                );
+            } else {
+                log::info!("전원: {} → {}", power.name(), state.name());
+            }
+            power = state;
+        }
+        if power == PowerState::Sleep {
+            log::info!(
+                "딥슬립 진입 (마지막 사용 후 {}초, 연결={connected}). 좌·우클릭이나 스크롤↓ 버튼으로 깨웁니다",
+                policy.idle_for_ms(now_ms) / 1000
+            );
+            mouse.shutdown();
+            led.off();
+            if let Err(e) = imu.sleep() {
+                log::warn!("IMU 절전 실패: {e}");
+            }
+            sleep::deep_sleep(bias);
+        }
+
         // ------------------------------------------------------------ 버튼/휠
         let mut buttons = 0u8;
-        if btn_left.pressed() && !swallow_left {
+        if btn_left.pressed() && !swallow_left && !wake_guard {
             buttons |= BTN_LEFT;
         }
-        if btn_right.pressed() {
+        if btn_right.pressed() && !wake_guard {
             buttons |= BTN_RIGHT;
         }
 
@@ -357,13 +480,19 @@ fn main() -> anyhow::Result<()> {
         if down_repeat.tick(&btn_scroll_down) {
             wheel -= SCROLL_SIGN;
         }
+        if wake_guard {
+            wheel = 0;
+        }
 
         // ------------------------------------------------------------ 상태 LED
-        // 캘리브레이션은 빠른 깜빡임(0.3초), 광고 중은 느린 깜빡임(1초)
+        // 캘리브레이션은 빠른 깜빡임(0.3초), 광고 중은 느린 깜빡임(1초), 대기 중은 소등
         match &mode {
-            Mode::CalTopLeft => led.set(Status::ScreenCalTopLeft, tick % 30 < 15),
-            Mode::CalBottomRight { .. } => led.set(Status::ScreenCalBottomRight, tick % 30 < 15),
-            _ if !mouse.connected() => led.set(Status::Advertising, tick % 100 < 50),
+            Mode::CalTopLeft => led.set(Status::ScreenCalTopLeft, now_ms % 300 < 150),
+            Mode::CalBottomRight { .. } => {
+                led.set(Status::ScreenCalBottomRight, now_ms % 300 < 150)
+            }
+            _ if !connected => led.set(Status::Advertising, now_ms % 1000 < 500),
+            _ if power == PowerState::Idle => led.off(),
             Mode::Relative => led.set(Status::Connected, true),
             Mode::Absolute(_) => led.set(Status::ConnectedAbsolute, true),
         }
@@ -417,10 +546,23 @@ fn main() -> anyhow::Result<()> {
         }
         prev_buttons = buttons;
 
+        // ------------------------------------------------------------ BLE 연결 파라미터
+        if connected {
+            let since = *connected_since.get_or_insert(now_ms);
+            if !conn_params_requested && now_ms - since >= CONN_PARAM_DELAY_MS {
+                mouse.request_power_saving();
+                conn_params_requested = true;
+            }
+        } else {
+            connected_since = None;
+            conn_params_requested = false;
+        }
+
         // 절대 모드 진단 (0.5초마다): 가리키는 각도와 실제로 보내는 좌표.
         // 커서 위치가 이상할 때 펌웨어 쪽 값인지 호스트 쪽 해석인지 가른다.
         if let Mode::Absolute(cal) = &mode {
-            if tick % 50 == 0 {
+            if now_ms >= next_abs_log_ms {
+                next_abs_log_ms = now_ms + ABS_LOG_MS;
                 let a = angles.angles();
                 let (x, y) = cal.position(a);
                 log::info!(
@@ -437,12 +579,24 @@ fn main() -> anyhow::Result<()> {
         }
 
         // 5초에 한 번 상태 로그 (시리얼이 밀리지 않게)
-        if tick % 500 == 0 {
+        period_ticks += 1;
+        if now_ms >= next_status_ms {
+            next_status_ms = now_ms + STATUS_LOG_MS;
             let (yaw_deg, el_deg) = angles.angles();
+            let ble = match mouse.conn_params() {
+                Some((interval, latency, timeout)) => {
+                    format!("{interval:.2}ms/레이턴시{latency}/타임아웃{timeout}ms")
+                }
+                None => "-".into(),
+            };
+            let loop_hz = period_ticks as u64 * 1000 / (now_ms - period_start_ms).max(1);
             log::info!(
-                "connected={} 모드={} | yaw={:+6.2} pitch={:+6.2} dps | 기울기={:+5.1}° | 각도 yaw={:+6.1}° el={:+5.1}° | bias=({:+.2},{:+.2},{:+.2}) 정지판정={}%",
-                mouse.connected(),
+                "connected={} 모드={} 전원={} 루프={loop_hz}Hz BLE={} USB={} | yaw={:+6.2} pitch={:+6.2} dps | 기울기={:+5.1}° | 각도 yaw={:+6.1}° el={:+5.1}° | bias=({:+.2},{:+.2},{:+.2}) 정지판정={}%",
+                connected,
                 mode.name(),
+                power.name(),
+                ble,
+                usb_host,
                 yaw_rate,
                 pitch_rate,
                 orient.roll_deg(),
@@ -451,14 +605,53 @@ fn main() -> anyhow::Result<()> {
                 bias.x,
                 bias.y,
                 bias.z,
-                still_ticks / 5
+                still_ticks * 100 / period_ticks
             );
+            still_ticks = 0;
+            period_ticks = 0;
+            period_start_ms = now_ms;
         }
 
-        if tick % 500 == 0 {
-            still_ticks = 0;
-        }
-        tick = tick.wrapping_add(1);
-        FreeRtos::delay_ms(LOOP_PERIOD_MS);
+        // 대기 중인 상대 모드는 루프를 늦춰 깨어나는 횟수를 줄인다
+        let period = if power != PowerState::Active && matches!(mode, Mode::Relative) {
+            IDLE_LOOP_PERIOD_MS
+        } else {
+            LOOP_PERIOD_MS
+        };
+        timer.wait(period);
     }
+}
+
+/// 부팅 시 정지 상태를 가정하고 자이로 바이어스를 잰다 (5ms 간격 200샘플).
+/// 움직임이 감지되면 다시 시도하고, 끝내 실패하면 흔들림 검사 없이 받아들인다.
+fn calibrate_at_boot(imu: &mut imu::Imu<'_>, led: &mut StatusLed<'_>) -> anyhow::Result<V3> {
+    log::info!("자이로 캘리브레이션 중... 보드를 움직이지 마세요");
+    led.set(Status::Calibrating, true);
+    let mut boot_bias = None;
+    for attempt in 1..=BOOT_CAL_ATTEMPTS {
+        let discard = if attempt == 1 { 60 } else { 10 };
+        match imu.calibrate_gyro(discard, 200, CAL_MAX_SPREAD_DPS) {
+            Ok(b) => {
+                boot_bias = Some(b);
+                break;
+            }
+            Err(e) => log::warn!("{e} — 다시 시도 ({attempt}/{BOOT_CAL_ATTEMPTS})"),
+        }
+    }
+    let bias = match boot_bias {
+        Some(b) => b,
+        None => {
+            log::warn!(
+                "정지 상태를 얻지 못해 그대로 진행합니다. 보드를 내려놓으면 자동 보정됩니다"
+            );
+            imu.calibrate_gyro(10, 200, f32::INFINITY)?
+        }
+    };
+    log::info!(
+        "캘리브레이션 완료: bias[dps] x={:+.2} y={:+.2} z={:+.2}",
+        bias.x,
+        bias.y,
+        bias.z
+    );
+    Ok(bias)
 }

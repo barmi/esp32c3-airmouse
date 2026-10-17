@@ -1,3 +1,4 @@
+use esp_idf_svc::hal::delay::Ets;
 use esp_idf_svc::hal::gpio::{Input, InputPin, PinDriver, Pull};
 
 /// 디바운스에 필요한 연속 동일 샘플 수. 10ms 루프 기준 3개 = 30ms.
@@ -9,6 +10,8 @@ const DEBOUNCE_SAMPLES: u8 = 3;
 /// `PinDriver`가 핀 타입을 지우기 때문에 어느 GPIO를 쓰든 같은 타입이 된다.
 pub struct Button<'d> {
     pin: PinDriver<'d, Input>,
+    /// 디바운스 전 마지막 핀 상태
+    raw: bool,
     pressed: bool,
     prev_pressed: bool,
     counter: u8,
@@ -16,10 +19,17 @@ pub struct Button<'d> {
 
 impl<'d> Button<'d> {
     pub fn new(pin: impl InputPin + 'd) -> anyhow::Result<Self> {
+        let pin = PinDriver::input(pin, Pull::Up)?;
+        // 풀업이 핀을 끌어올릴 시간을 준 뒤 읽는다
+        Ets::delay_us(50);
+        // 이미 눌려 있는 버튼은 눌린 상태로 시작해 '눌린 순간'이 생기지 않게 한다.
+        // 딥슬립을 깨운 클릭을 부팅 후 계속 누르고 있어도 새 클릭으로 처리되지 않는다.
+        let raw = pin.is_low();
         Ok(Self {
-            pin: PinDriver::input(pin, Pull::Up)?,
-            pressed: false,
-            prev_pressed: false,
+            pin,
+            raw,
+            pressed: raw,
+            prev_pressed: raw,
             counter: 0,
         })
     }
@@ -27,6 +37,7 @@ impl<'d> Button<'d> {
     /// 루프 주기마다 한 번 호출해 디바운스 상태를 갱신한다.
     pub fn update(&mut self) {
         let raw = self.pin.is_low();
+        self.raw = raw;
         self.prev_pressed = self.pressed;
         if raw == self.pressed {
             self.counter = 0;
@@ -42,6 +53,11 @@ impl<'d> Button<'d> {
     /// 디바운스된 눌림 상태. 누르고 있는 동안 계속 true (드래그에 사용).
     pub fn pressed(&self) -> bool {
         self.pressed
+    }
+
+    /// 디바운스 전 핀 상태. 대기 모드에서 누르는 즉시 깨어나는 데 쓴다.
+    pub fn raw_pressed(&self) -> bool {
+        self.raw
     }
 
     /// 방금 눌린 순간에만 true. 한 번만 실행할 동작에 사용.

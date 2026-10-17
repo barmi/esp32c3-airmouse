@@ -10,6 +10,16 @@ use zerocopy_derive::{Immutable, IntoBytes};
 const MOUSE_ID: u8 = 0x01;
 const ABS_ID: u8 = 0x02;
 
+/// 요청할 연결 간격 (1.25ms 단위). 15ms — 애플 액세서리 가이드라인이 허용하는 조합
+/// (최소 = 최대 = 15ms).
+const CONN_INTERVAL: u16 = 12;
+/// 슬레이브 레이턴시: 보낼 것이 없을 때 건너뛸 수 있는 연결 이벤트 수 (가이드라인 상한 30).
+/// 기기 → 호스트 전송은 다음 연결 이벤트에 바로 나가므로 커서 반응은 늦어지지 않는다.
+const CONN_LATENCY: u16 = 30;
+/// 감시 타임아웃 (10ms 단위). 가이드라인: 2~6초이면서 간격 × (레이턴시 + 1) × 3
+/// = 1.4초보다 길 것.
+const CONN_TIMEOUT: u16 = 400;
+
 /// 리포트 디스크립터: 두 개의 포인터를 선언한다.
 /// - Report ID 1: 표준 3버튼 + X/Y 상대 이동 + 휠 (상대 모드)
 /// - Report ID 2: 펜 디지타이저 — 팁·배럴 스위치 + X/Y 절대 좌표(0~32767) (절대 모드)
@@ -139,7 +149,13 @@ impl BleMouse {
 
         let server = device.get_server();
         server.on_connect(|_server, desc| {
-            log::info!("BLE 연결됨: {:?}", desc.address());
+            log::info!(
+                "BLE 연결됨: {:?} (간격 {:.2}ms, 레이턴시 {}, 타임아웃 {}ms)",
+                desc.address(),
+                desc.interval() as f32 * 1.25,
+                desc.latency(),
+                desc.timeout() as u32 * 10
+            );
         });
         server.on_disconnect(|desc, reason| {
             log::info!("BLE 연결 해제: {:?} (사유: {:?})", desc.address(), reason);
@@ -175,6 +191,52 @@ impl BleMouse {
 
     pub fn connected(&self) -> bool {
         self.server.connected_count() > 0
+    }
+
+    /// 현재 연결의 파라미터: (간격 ms, 슬레이브 레이턴시, 감시 타임아웃 ms)
+    pub fn conn_params(&self) -> Option<(f32, u16, u32)> {
+        self.server.connections().next().map(|d| {
+            (
+                d.interval() as f32 * 1.25,
+                d.latency(),
+                d.timeout() as u32 * 10,
+            )
+        })
+    }
+
+    /// 보낼 것이 없는 동안 무선이 연결 이벤트를 건너뛸 수 있도록 연결 파라미터를 요청한다.
+    /// 받아들일지는 호스트가 정한다.
+    pub fn request_power_saving(&mut self) {
+        let handles: Vec<u16> = self.server.connections().map(|d| d.conn_handle()).collect();
+        for handle in handles {
+            if let Err(e) = self.server.update_conn_params(
+                handle,
+                CONN_INTERVAL,
+                CONN_INTERVAL,
+                CONN_LATENCY,
+                CONN_TIMEOUT,
+            ) {
+                log::warn!("연결 파라미터 요청 실패: {e:?}");
+            }
+        }
+    }
+
+    /// 딥슬립 전에 BLE를 정리한다. 호스트가 끊김을 바로 알도록 연결을 정상 종료하고
+    /// 스택을 내린다. 이후 이 객체는 쓰지 않는다.
+    pub fn shutdown(&mut self) {
+        // 끊기면 자동으로 광고를 다시 시작하는 동작을 막는다
+        self.server.advertise_on_disconnect(false);
+        let handles: Vec<u16> = self.server.connections().map(|d| d.conn_handle()).collect();
+        for handle in handles {
+            if let Err(e) = self.server.disconnect(handle) {
+                log::warn!("BLE 연결 종료 실패: {e:?}");
+            }
+        }
+        // 종료 절차(LL_TERMINATE)가 호스트에 전달될 시간을 준다
+        esp_idf_svc::hal::delay::FreeRtos::delay_ms(200);
+        if let Err(e) = BLEDevice::deinit() {
+            log::warn!("BLE 스택 종료 실패: {e}");
+        }
     }
 
     pub fn send(&mut self, report: &MouseReport) {

@@ -28,6 +28,35 @@ impl<'d> Imu<'d> {
         Ok(Self { drv })
     }
 
+    /// 자이로·가속도를 끈다 (딥슬립 직전). 다시 쓰려면 `Imu::new`로 초기화한다.
+    pub fn sleep(&mut self) -> anyhow::Result<()> {
+        self.drv.set_power_mode(PowerMode::Sleep).map_err(err)
+    }
+
+    /// 캘리브레이션 없이 시작할 때(딥슬립 복귀) 자이로를 켠 직후의 포화 샘플을 흘려보낸다.
+    /// 포화값(±2000dps)이 한 번이라도 루프에 들어가면 커서가 크게 튄다.
+    pub fn warm_up(&mut self) {
+        use esp_idf_svc::hal::delay::FreeRtos;
+
+        /// 최소한 버리는 샘플 수 (5ms 간격이라 0.3초)
+        const MIN_DISCARD: usize = 60;
+        /// 포화값이 계속 나올 때 기다리는 상한 (약 1.3초)
+        const MAX_DISCARD: usize = 260;
+        /// 이보다 큰 값은 스핀업 중 포화값으로 본다 (풀스케일 2000dps)
+        const SATURATED_DPS: f32 = 1900.0;
+
+        for i in 0..MAX_DISCARD {
+            let saturated = match self.gyro_dps() {
+                Ok(g) => g.x.abs().max(g.y.abs()).max(g.z.abs()) > SATURATED_DPS,
+                Err(_) => true,
+            };
+            if i >= MIN_DISCARD && !saturated {
+                break;
+            }
+            FreeRtos::delay_ms(5);
+        }
+    }
+
     /// 자이로 각속도 (deg/sec)
     pub fn gyro_dps(&mut self) -> anyhow::Result<V3> {
         let g = self.drv.gyro_norm().map_err(err)?;

@@ -44,6 +44,10 @@ ESP-IDF v5.3.3과 RISC-V 크로스컴파일 툴체인을 `firmware/.embuild/`에
 espflash monitor --port /dev/cu.usbmodem1101
 ```
 
+포트를 열면 보드가 재부팅됩니다 (USB 직렬 포트를 여는 것만으로 리셋이 걸립니다). 재부팅 직후 캘리브레이션이 있으니 보드를 내려놓고 여세요.
+
+USB로 컴퓨터에 연결된 동안에는 펌웨어가 라이트 슬립과 딥슬립을 하지 않아 로그와 플래시가 끊기지 않습니다. 대신 절전 효과는 충전기나 배터리로 동작할 때만 나타납니다 ([전원 관리](architecture.md#전원-관리)).
+
 ## 툴체인이 특정 nightly에 고정된 이유
 
 [rust-toolchain.toml](../firmware/rust-toolchain.toml)은 `nightly-2026-07-20`으로 고정되어 있습니다. 최신 nightly에서는 espidf 타겟의 std 빌드가 실패합니다.
@@ -96,12 +100,30 @@ cargo fmt && cargo clippy --release -- -D warnings
 | `CONFIG_BT_NIMBLE_ENABLED=y` (+ Bluedroid 비활성) | esp32-nimble 크레이트 요구사항 |
 | `CONFIG_BT_NIMBLE_NVS_PERSIST=y` | 본딩 정보 저장 — 재부팅 후 자동 재연결 |
 | `CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y` | NimBLE INFO 로그가 notify마다 찍혀 시리얼을 도배함 |
+| `CONFIG_PM_ENABLE=y`, `CONFIG_FREERTOS_USE_TICKLESS_IDLE=y` | 클럭 자동 조절 + 자동 라이트 슬립 |
+| `CONFIG_FREERTOS_HZ=1000` | 기본 100Hz면 라이트 슬립 최소 대기(3틱)가 30ms라 10ms 루프에서 잠들지 못함 |
+| `CONFIG_PM_SLP_IRAM_OPT=y`, `CONFIG_PM_RTOS_IDLE_OPT=y` | 슬립 진입·복귀 코드를 IRAM에 두어 한 번에 더 오래 잠 |
+| `CONFIG_BT_CTRL_MODEM_SLEEP=y` 외 3개 | BLE 연결을 유지한 채 슬립. 32kHz 크리스털 미실장이라 메인 크리스털을 저전력 클럭으로 씀 |
+| `CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION=y` | USB로 컴퓨터에 연결된 동안은 라이트 슬립 금지 (USB 시리얼 유지) |
 
 ## 문제 해결
 
 ### `Device or resource busy`
 
 시리얼 모니터가 이미 포트를 잡고 있습니다. 기존 `espflash monitor` 프로세스를 종료하고 다시 시도하세요.
+
+### 절전 동작은 맥에 꽂은 채로는 확인할 수 없어요
+
+USB로 컴퓨터에 연결된 동안은 라이트 슬립이 꺼지므로, 슬립과 관련된 문제는 충전기나 배터리로 동작할 때만 드러납니다. 그때는 시리얼 로그를 볼 수 없으니 맥 쪽에서 확인합니다.
+
+- **BLE 연결·끊김**: `/usr/bin/log show --last 10m --info --predicate 'subsystem BEGINSWITH "com.apple.bluetooth"' | grep B0:A6:04` — 연결 완료, 끊김 사유(708 = 감시 타임아웃), 맥이 정한 연결 간격이 보입니다. zsh에서는 `log`가 내장 명령이라 경로를 붙여야 합니다.
+- **스크롤·커서 속도**: 맥의 스크롤 이벤트 시각과 방향은 듣기 전용 이벤트 탭(권한 불필요)으로, 초당 마우스 이동 이벤트 수는 `CGEventSourceCounterForEventType`으로 잴 수 있습니다.
+
+배터리를 뺀 상태에서는 USB를 뽑는 순간 보드가 꺼졌다가 충전기에서 새로 부팅합니다.
+
+### 보드를 꽂았는데 포트가 안 보여요
+
+배터리로 쓰다가 딥슬립에 들어간 상태면 USB를 꽂아도 깨어나지 않습니다(USB 연결은 기상 조건이 아닙니다). 좌클릭을 눌러 깨우거나 RST 버튼을 누르세요. 깨어난 뒤에는 USB 호스트가 연결돼 있으므로 다시 잠들지 않습니다.
 
 ### `No such file or directory` (플래시할 때)
 
