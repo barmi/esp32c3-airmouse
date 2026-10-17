@@ -1,0 +1,148 @@
+name: Release
+
+# v<버전> 태그를 푸시하면 릴리스 빌드를 만들어 GitHub Releases에 올린다.
+# 태그 없이 수동 실행(workflow_dispatch)하면 릴리스 없이 산출물만 Actions 아티팩트로 남긴다.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  ESPFLASH_VERSION: v4.5.0
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: firmware
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # build.rs의 git describe가 태그를 봐야 펌웨어 버전이 "0.1.0"으로 찍힌다
+          fetch-depth: 0
+
+      - name: Check tag matches Cargo.toml version
+        if: github.ref_type == 'tag'
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::태그($GITHUB_REF_NAME)와 Cargo.toml 버전(v$version)이 다릅니다"
+            exit 1
+          fi
+
+      # 아래 네 단계는 ci.yml과 같다. 캐시 키도 같아서 main에서 만든 캐시를 그대로 쓴다.
+      - name: Install ESP-IDF build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            git wget flex bison gperf cmake ninja-build ccache \
+            libffi-dev libssl-dev dfu-util libusb-1.0-0
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            firmware/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('firmware/Cargo.lock', 'firmware/rust-toolchain.toml') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Cache ESP-IDF
+        uses: actions/cache@v4
+        with:
+          path: |
+            firmware/.embuild
+            ~/.espressif
+          key: espidf-${{ runner.os }}-${{ hashFiles('firmware/.cargo/config.toml', 'firmware/sdkconfig.defaults') }}
+          restore-keys: espidf-${{ runner.os }}-
+
+      - name: Install ldproxy
+        run: cargo install ldproxy --locked
+
+      # 병합 이미지를 만드는 데만 쓴다. 빌드해서 설치하면 수 분이 걸려 배포본을 받는다.
+      - name: Install espflash
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/espflash.zip" \
+            "https://github.com/esp-rs/espflash/releases/download/$ESPFLASH_VERSION/espflash-x86_64-unknown-linux-musl.zip"
+          unzip -o "$RUNNER_TEMP/espflash.zip" -d "$HOME/.cargo/bin"
+          espflash --version
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Package
+        id: package
+        run: |
+          elf=target/riscv32imc-esp-espidf/release/esp32c3-airmouse
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            name=$GITHUB_REF_NAME
+            # 태그에서 빌드했는데 펌웨어 버전에 커밋이 붙었으면(git이 태그를 못 봄) 잘못 붙은 릴리스다
+            if strings "$elf" | grep -q "^$version+"; then
+              echo "::error::릴리스 빌드의 펌웨어 버전이 $version이 아닙니다: $(strings "$elf" | grep -m1 "^$version+")"
+              exit 1
+            fi
+          else
+            name=dev-${GITHUB_SHA::7}
+          fi
+          mkdir -p dist
+          cp "$elf" "dist/esp32c3-airmouse-$name.elf"
+          # 부트로더 + 파티션 테이블 + 앱을 0x0부터 한 파일로. espflash flash와 같은 기본
+          # 부트로더·파티션 테이블을 쓴다 (보드 플래시 4MB).
+          espflash save-image --chip esp32c3 --merge --skip-padding --flash-size 4mb \
+            "$elf" "dist/esp32c3-airmouse-$name-merged.bin"
+          (cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt)
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp32c3-airmouse-${{ steps.package.outputs.name }}
+          path: firmware/dist/
+
+      - name: Create GitHub release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NAME: ${{ steps.package.outputs.name }}
+          VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          cat > "$RUNNER_TEMP/notes.tmpl" <<'EOF'
+          ## 보드에 올리기
+
+          **페어링을 유지하려면 (권장)**: espflash가 부트로더·파티션 테이블·앱만 쓰고 페어링 정보(NVS)는 건드리지 않습니다.
+
+          ```bash
+          espflash flash esp32c3-airmouse-@NAME@.elf
+          ```
+
+          **처음부터 깨끗이 설치**: 병합 이미지를 0x0에 씁니다. 페어링 정보가 지워지므로 맥에서 기기를 지우고 다시 페어링해야 합니다.
+
+          ```bash
+          espflash write-bin 0x0 esp32c3-airmouse-@NAME@-merged.bin
+          ```
+
+          | 파일 | 내용 |
+          |---|---|
+          | `esp32c3-airmouse-@NAME@.elf` | 펌웨어 (espflash flash용) |
+          | `esp32c3-airmouse-@NAME@-merged.bin` | 부트로더 + 파티션 테이블 + 앱 병합 이미지 (0x0, 4MB 플래시) |
+          | `SHA256SUMS.txt` | 체크섬 |
+
+          부팅 로그 첫 줄과 상태 로그의 `버전=`이 `@VERSION@`이면 이 릴리스가 올라간 것입니다. 사용법은 [docs/usage.md](https://github.com/barmi/esp32c3-airmouse/blob/main/docs/usage.md)에 있습니다.
+          EOF
+          sed "s/@NAME@/$NAME/g; s/@VERSION@/$VERSION/g" "$RUNNER_TEMP/notes.tmpl" > "$RUNNER_TEMP/notes.md"
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "esp32c3-airmouse $GITHUB_REF_NAME" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            --generate-notes

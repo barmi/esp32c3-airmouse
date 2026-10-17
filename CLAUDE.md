@@ -16,6 +16,7 @@ ESP32-C3-DevKit-RUST-2(esp-rust-board) 기반 BLE HID 에어마우스. Rust std(
 - 빌드/실행은 반드시 `firmware/` 안에서: `cargo build`, `cargo run`(espflash 플래시 + 시리얼 모니터).
 - 첫 빌드는 ESP-IDF(v5.3.3)를 `firmware/.embuild/`에 내려받아 오래 걸린다. 보드 포트는 `/dev/cu.usbmodem*`.
 - 타겟: `riscv32imc-esp-espidf` (build-std, firmware/rust-toolchain.toml이 자동 적용).
+- 버전은 `firmware/Cargo.toml`이 기준이고 펌웨어에는 `0.1.0+<커밋>`으로 찍힌다. `v<버전>` 태그를 푸시하면 Release 워크플로가 GitHub Releases에 올린다 (docs/development.md#릴리스).
 - nightly는 `nightly-2026-07-20`으로 고정 — 이후 nightly는 std의 fchmodat/AT_FDCWD 사용(rust-lang/rust#158168) 때문에 espidf 타겟 빌드가 깨진다. libc가 espidf에 해당 심볼을 추가하면 고정 해제 가능.
 
 ## 하드웨어 핵심 사실

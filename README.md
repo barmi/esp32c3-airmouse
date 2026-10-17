@@ -40,6 +40,16 @@ cd firmware && cargo run
 
 펌웨어 버전은 `firmware/Cargo.toml`을 따르고, 부팅 로그와 상태 로그에 `0.1.0+<커밋>` 형태로 찍힙니다 ([버전 규칙](docs/development.md#버전)).
 
+### 빌드 없이 올리기
+
+[Releases](https://github.com/barmi/esp32c3-airmouse/releases)에서 펌웨어를 내려받아 올릴 수 있습니다. `espflash`만 있으면 됩니다(`cargo install espflash`).
+
+```bash
+espflash flash esp32c3-airmouse-v0.1.0.elf
+```
+
+같이 올라가는 `-merged.bin`은 0x0에 한 번에 쓰는 이미지인데, 페어링 정보까지 지우므로 맥에서 다시 페어링해야 합니다 ([릴리스 파일](docs/development.md#릴리스)).
+
 ## 문서
 
 | 문서 | 내용 |

@@ -85,9 +85,38 @@ USB로 컴퓨터에 연결된 동안에는 펌웨어가 라이트 슬립과 딥�
 
 - **부팅 로그** 첫 줄 `esp32c3-airmouse 0.1.0+6d8214c`
 - **상태 로그**(5초마다)의 `버전=` — [리셋 없이 시리얼 열기](#실행-중인-보드의-로그를-리셋-없이-보기)로 지금 돌고 있는 펌웨어를 확인할 수 있습니다.
-- **부트로더 로그와 바이너리 헤더**의 `App version`(`Cargo.toml` 버전)과 `Compile time` — ESP-IDF 앱 정보(`esp_app_desc`)를 Rust에서 정의합니다. 정의하지 않으면 ESP-IDF를 처음 구성할 때 캐시된 값(엉뚱한 커밋과 날짜)이 계속 남습니다.
+- **부트로더 로그와 바이너리 헤더**의 `App version`(`Cargo.toml` 버전)과 `Compile time`(UTC) — ESP-IDF 앱 정보(`esp_app_desc`)를 Rust에서 정의합니다. 정의하지 않으면 ESP-IDF를 처음 구성할 때 캐시된 값(엉뚱한 커밋과 날짜)이 계속 남습니다.
 
 버전을 올릴 때는 `Cargo.toml`의 `version`을 고쳐 커밋하고, 그 커밋에 `v<버전>` 태그를 붙입니다. 1.0 전이라 major는 0으로 두고, 기능 추가나 다시 페어링해야 하는 변경은 minor, 버그 수정은 patch를 올립니다.
+
+## 릴리스
+
+`v<버전>` 태그를 푸시하면 [Release 워크플로](../.github/workflows/release.yml)가 릴리스 빌드를 만들어 [GitHub Releases](https://github.com/barmi/esp32c3-airmouse/releases)에 올립니다.
+
+```bash
+git tag v0.1.0
+```
+
+```bash
+git push origin v0.1.0
+```
+
+태그는 `Cargo.toml`의 버전을 올린 커밋에 붙입니다. 워크플로는 다음 경우에 실패해서 잘못 붙은 릴리스를 막습니다.
+
+- 태그와 `Cargo.toml` 버전이 다를 때
+- 빌드된 펌웨어의 버전에 커밋이 붙어 있을 때 (git이 태그를 못 봄)
+
+올라가는 파일:
+
+| 파일 | 쓰는 법 |
+|---|---|
+| `esp32c3-airmouse-v0.1.0.elf` | `espflash flash <파일>` — 지금처럼 부트로더·파티션 테이블·앱만 써서 **페어링이 유지됩니다** (권장) |
+| `esp32c3-airmouse-v0.1.0-merged.bin` | `espflash write-bin 0x0 <파일>` 또는 esptool — 0x0부터 한 번에 쓰는 병합 이미지. 빈 영역을 0xFF로 채워 **NVS(페어링 정보)가 지워지므로** 맥에서 다시 페어링해야 합니다 |
+| `SHA256SUMS.txt` | 체크섬 |
+
+병합 이미지는 espflash의 기본 부트로더와 파티션 테이블(앱 영역이 4MB 플래시 끝까지)을 씁니다. `espflash flash`로 올릴 때와 같습니다.
+
+태그 없이 Actions 탭에서 수동 실행하면(`gh workflow run release.yml`) 릴리스를 만들지 않고 같은 파일들을 Actions 아티팩트로만 남깁니다. 워크플로를 고친 뒤 시험할 때 씁니다.
 
 BLE 장치 정보 서비스(DIS)에는 버전을 넣지 않았습니다. 특성을 추가하면 GATT 핸들이 밀려 맥에서 기기를 지우고 다시 페어링해야 하기 때문입니다.
 
