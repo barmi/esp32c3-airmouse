@@ -33,8 +33,9 @@ use std::time::Instant;
 // 끈다 (심볼은 #[no_mangle]이라 모듈 안에 있어도 이름이 같다).
 #[allow(unexpected_cfgs)]
 mod app_desc {
-    // 중괄호 형식이어야 빌드 날짜와 시각이 제자리에 들어간다 (괄호 형식은 하위 호환으로 뒤바꿈)
-    esp_idf_svc::sys::esp_app_desc! {}
+    // 인자 true로 불러야 빌드 날짜와 시각이 제자리에 들어간다. 인자 없이 부르면 하위 호환으로
+    // 둘을 뒤바꾼다 (macro_rules는 괄호와 중괄호를 구분하지 않아 `! {}`로 불러도 마찬가지).
+    esp_idf_svc::sys::esp_app_desc!(true);
 }
 
 /// 펌웨어 버전: "0.1.0"(릴리스 태그) 또는 "0.1.0+<커밋>[-dirty]" (build.rs)
