@@ -193,6 +193,8 @@ impl BleMouse {
 
     /// 절대 좌표 모드 전송. `buttons`는 MouseReport와 같은 비트(좌=0x01, 우=0x02)이고
     /// 펜의 팁·배럴 스위치로 바뀐다. `x`, `y`는 0..=ABS_MAX (화면 왼쪽 위가 0).
+    /// 이 Mac의 드라이버는 배럴 스위치를 우클릭으로 인식하지 않으므로, 호출하는 쪽은
+    /// 우버튼을 상대 리포트로 보낸다.
     /// `in_range`를 false로 보내면 펜이 근접 범위를 벗어난 것으로 알린다(모드 종료 시).
     pub fn send_pen(&mut self, buttons: u8, x: u16, y: u16, in_range: bool) {
         let mut switches = 0;

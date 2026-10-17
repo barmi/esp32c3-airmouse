@@ -30,6 +30,14 @@ const LOOP_PERIOD_MS: u32 = 10;
 /// 한 틱의 적분이 튀지 않도록 막는다.
 const MAX_DT_S: f32 = 0.05;
 
+/// 캘리브레이션에서 받아들이는 자이로 흔들림 폭 상한(dps). 넘으면 보드가 움직인
+/// 것으로 보고 실패한다 (책상 위 잡음은 0.5 안팎).
+const CAL_MAX_SPREAD_DPS: f32 = 2.0;
+
+/// 부팅 캘리브레이션 재시도 횟수. 다 실패하면 흔들림 검사 없이 받아들이고,
+/// 남는 오차는 보드를 내려놓았을 때 바이어스 추적이 바로잡는다.
+const BOOT_CAL_ATTEMPTS: usize = 5;
+
 /// HID 리포트의 버튼 비트
 const BTN_LEFT: u8 = 0x01;
 const BTN_RIGHT: u8 = 0x02;
@@ -111,10 +119,30 @@ fn main() -> anyhow::Result<()> {
     let mut up_repeat = Repeater::new(SCROLL_REPEAT_DELAY_MS, SCROLL_REPEAT_MS, LOOP_PERIOD_MS);
     let mut down_repeat = Repeater::new(SCROLL_REPEAT_DELAY_MS, SCROLL_REPEAT_MS, LOOP_PERIOD_MS);
 
-    // 부팅 시 정지 상태 가정하고 자이로 바이어스 캘리브레이션 (실측 약 2.6초)
+    // 부팅 시 정지 상태 가정하고 자이로 바이어스 캘리브레이션 (실측 약 2.6초).
+    // 움직임이 감지되면 다시 시도하고, 끝내 실패하면 검사 없이 받아들인다.
     log::info!("자이로 캘리브레이션 중... 보드를 움직이지 마세요");
     led.set(Status::Calibrating, true);
-    let mut bias = imu.calibrate_gyro(60, 200)?;
+    let mut boot_bias = None;
+    for attempt in 1..=BOOT_CAL_ATTEMPTS {
+        let discard = if attempt == 1 { 60 } else { 10 };
+        match imu.calibrate_gyro(discard, 200, CAL_MAX_SPREAD_DPS) {
+            Ok(b) => {
+                boot_bias = Some(b);
+                break;
+            }
+            Err(e) => log::warn!("{e} — 다시 시도 ({attempt}/{BOOT_CAL_ATTEMPTS})"),
+        }
+    }
+    let mut bias = match boot_bias {
+        Some(b) => b,
+        None => {
+            log::warn!(
+                "정지 상태를 얻지 못해 그대로 진행합니다. 보드를 내려놓으면 자동 보정됩니다"
+            );
+            imu.calibrate_gyro(10, 200, f32::INFINITY)?
+        }
+    };
     log::info!(
         "캘리브레이션 완료: bias[dps] x={:+.2} y={:+.2} z={:+.2}",
         bias.x,
@@ -137,6 +165,10 @@ fn main() -> anyhow::Result<()> {
     // 캘리브레이션 단계에서 쓴 좌클릭이 호스트로 새지 않도록 뗄 때까지 막는다
     let mut swallow_left = false;
     let mut last_abs = (u16::MAX, u16::MAX);
+    // 절대 모드에서 상대 리포트로 마지막에 보낸 버튼 (우버튼)
+    let mut last_rel_buttons = 0u8;
+    // 상태 로그 주기 동안 바이어스 추적이 정지로 판정한 틱 수
+    let mut still_ticks = 0u32;
     let mut last_tick = Instant::now();
     let mut prev_buttons = 0u8;
     let mut prev_btn_state = 0u8;
@@ -175,7 +207,9 @@ fn main() -> anyhow::Result<()> {
 
         let raw = imu.gyro_dps()?;
         let accel = imu.accel_g()?;
-        bias_tracker.update(raw, &mut bias, accel);
+        if bias_tracker.update(raw, &mut bias, accel) {
+            still_ticks += 1;
+        }
         let gyro = raw - bias;
         orient.update(gyro, accel, dt);
 
@@ -197,7 +231,7 @@ fn main() -> anyhow::Result<()> {
                 Mode::Relative => {
                     log::info!("재캘리브레이션 요청 — 보드를 내려놓고 기다리세요");
                     led.set(Status::Calibrating, true);
-                    match imu.calibrate_gyro(10, 200) {
+                    match imu.calibrate_gyro(10, 200, CAL_MAX_SPREAD_DPS) {
                         Ok(new_bias) => {
                             bias = new_bias;
                             log::info!(
@@ -232,11 +266,15 @@ fn main() -> anyhow::Result<()> {
                         Mode::Absolute(cal) => {
                             let (x, y) = cal.position(angles.angles());
                             mouse.send_pen(0, x, y, false);
+                            if last_rel_buttons != 0 {
+                                mouse.send(&MouseReport::default());
+                            }
                         }
                         _ => {}
                     }
                 }
                 prev_buttons = 0;
+                last_rel_buttons = 0;
                 swallow_left = btn_left.pressed();
                 mode = match mode {
                     Mode::Relative => {
@@ -351,18 +389,25 @@ fn main() -> anyhow::Result<()> {
                     let (x, y) = cal.position(angles.angles());
                     let moved = x.abs_diff(last_abs.0) >= ABS_SEND_THRESHOLD
                         || y.abs_diff(last_abs.1) >= ABS_SEND_THRESHOLD;
-                    if moved || buttons != prev_buttons {
-                        mouse.send_pen(buttons, x, y, true);
+                    // 좌버튼은 펜 팁으로 보낸다. 우버튼은 이 Mac의 드라이버
+                    // (AppleUserHIDEventDriver)가 펜 배럴 스위치를 우클릭으로 인식하지
+                    // 않아(실측: 22번 눌러 0번 인식) 휠과 함께 상대 리포트로 보낸다.
+                    let pen = buttons & BTN_LEFT;
+                    let rel = buttons & BTN_RIGHT;
+                    if moved || pen != prev_buttons & BTN_LEFT {
+                        mouse.send_pen(pen, x, y, true);
                         last_abs = (x, y);
                     }
-                    // 펜 리포트에는 휠이 없어 상대 리포트로 보낸다. 다만 상대 리포트의
-                    // 버튼 0이 펜의 눌림과 충돌해 드래그를 끊을 수 있으므로, 버튼을
-                    // 누르지 않았을 때만 보낸다.
-                    if wheel != 0 && buttons == 0 {
+                    // 상대 리포트의 좌버튼 0이 펜 팁의 눌림과 충돌해 드래그를 끊을 수
+                    // 있으므로 좌버튼을 누르지 않았을 때만 보낸다. 그동안 바뀐 우버튼은
+                    // 좌버튼을 뗀 뒤에 나간다.
+                    if pen == 0 && (rel != last_rel_buttons || wheel != 0) {
                         mouse.send(&MouseReport {
+                            buttons: rel,
                             wheel,
                             ..Default::default()
                         });
+                        last_rel_buttons = rel;
                     }
                 }
                 // 캘리브레이션 중에는 아무것도 보내지 않는다 (좌클릭이 호스트로 가지 않도록)
@@ -394,7 +439,7 @@ fn main() -> anyhow::Result<()> {
         if tick % 500 == 0 {
             let (yaw_deg, el_deg) = angles.angles();
             log::info!(
-                "connected={} 모드={} | yaw={:+6.2} pitch={:+6.2} dps | 기울기={:+5.1}° | 각도 yaw={:+6.1}° el={:+5.1}° | bias=({:+.2},{:+.2},{:+.2})",
+                "connected={} 모드={} | yaw={:+6.2} pitch={:+6.2} dps | 기울기={:+5.1}° | 각도 yaw={:+6.1}° el={:+5.1}° | bias=({:+.2},{:+.2},{:+.2}) 정지판정={}%",
                 mouse.connected(),
                 mode.name(),
                 yaw_rate,
@@ -404,10 +449,14 @@ fn main() -> anyhow::Result<()> {
                 el_deg,
                 bias.x,
                 bias.y,
-                bias.z
+                bias.z,
+                still_ticks / 5
             );
         }
 
+        if tick % 500 == 0 {
+            still_ticks = 0;
+        }
         tick = tick.wrapping_add(1);
         FreeRtos::delay_ms(LOOP_PERIOD_MS);
     }

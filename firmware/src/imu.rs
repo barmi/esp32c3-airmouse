@@ -46,7 +46,16 @@ impl<'d> Imu<'d> {
     /// 나온다. 포화 샘플이 하나만 평균에 섞여도 바이어스가 10dps 단위로
     /// 틀어져 커서가 흐르므로, 앞쪽 `discard`개를 버리는 것에 더해
     /// 정지 상태로 볼 수 없는 샘플은 평균에서 제외한다.
-    pub fn calibrate_gyro(&mut self, discard: usize, samples: usize) -> anyhow::Result<V3> {
+    ///
+    /// 받아들인 샘플의 흔들림 폭(최대−최소)이 어느 축이든 `max_spread_dps`를 넘으면
+    /// 보드가 움직인 것으로 보고 실패한다. 손에 든 채 재캘리브레이션하면 20dps 문턱
+    /// 아래의 움직임이 평균에 섞여 영점이 4dps씩 틀어진 적이 있다.
+    pub fn calibrate_gyro(
+        &mut self,
+        discard: usize,
+        samples: usize,
+        max_spread_dps: f32,
+    ) -> anyhow::Result<V3> {
         use esp_idf_svc::hal::delay::FreeRtos;
 
         /// 정지 상태로 인정하는 각속도 상한(dps). 이 값을 넘는 샘플은
@@ -61,6 +70,8 @@ impl<'d> Imu<'d> {
         }
 
         let (mut sx, mut sy, mut sz) = (0.0f32, 0.0f32, 0.0f32);
+        let mut lo = V3::new(f32::MAX, f32::MAX, f32::MAX);
+        let mut hi = V3::new(f32::MIN, f32::MIN, f32::MIN);
         let (mut kept, mut rejected) = (0usize, 0usize);
         for _ in 0..samples * MAX_ATTEMPTS {
             if kept >= samples {
@@ -76,6 +87,8 @@ impl<'d> Imu<'d> {
                 sx += g.x;
                 sy += g.y;
                 sz += g.z;
+                lo = V3::new(lo.x.min(g.x), lo.y.min(g.y), lo.z.min(g.z));
+                hi = V3::new(hi.x.max(g.x), hi.y.max(g.y), hi.z.max(g.z));
                 kept += 1;
             }
             FreeRtos::delay_ms(5);
@@ -86,6 +99,15 @@ impl<'d> Imu<'d> {
         }
         if rejected > 0 {
             log::info!("캘리브레이션: {rejected}개 샘플 제외 (움직임/스핀업)");
+        }
+        let spread = hi - lo;
+        if spread.x > max_spread_dps || spread.y > max_spread_dps || spread.z > max_spread_dps {
+            anyhow::bail!(
+                "캘리브레이션 실패: 보드가 움직였습니다 (흔들림 폭 {:.1}/{:.1}/{:.1}dps)",
+                spread.x,
+                spread.y,
+                spread.z
+            );
         }
         let n = kept as f32;
         Ok(V3::new(sx / n, sy / n, sz / n))

@@ -32,19 +32,25 @@ const DEGENERATE_LIMIT: f32 = 0.2;
 /// 잡음이 증폭되지 않도록 cos를 이 값 아래로 내리지 않는다.
 const MIN_COS_ELEVATION: f32 = 0.5;
 
-/// 바이어스 추적: 보정 후 각속도가 모든 축에서 이보다 작아야 정지로 본다(dps).
-/// 손에 쥔 채 아주 천천히 돌리는 동작까지 정지로 오인하면 그 회전이 바이어스로
-/// 흡수되어 커서가 덜 움직이므로 낮게 잡는다.
-const STILL_DPS: f32 = 0.8;
+/// 바이어스 추적: 정지 판정에 쓰는 최근 샘플 수 (100Hz에서 약 1초).
+const STILL_WINDOW: usize = 100;
+
+/// 바이어스 추적: 창 안에서 자이로 원시값의 흔들림 폭(최대−최소)이 모든 축에서
+/// 이보다 작아야 정지로 본다(dps). 책상 위 잡음은 0.3~0.5, 손에 쥔 떨림은 1~3 수준.
+/// 보정한 값의 크기가 아니라 원시값의 흔들림으로 판정하므로, 영점이 크게 틀어져
+/// 있어도 정지를 알아보고 바로잡을 수 있다.
+const STILL_GYRO_SPREAD_DPS: f32 = 1.0;
+
+/// 바이어스 추적: 창 안에서 가속도 각 축의 흔들림 폭이 이보다 작아야 정지로 본다(g).
+/// 보드가 천천히 돌면 중력 방향이 바뀌므로, 자이로만으로는 영점 오차와 구분되지 않는
+/// 느린 회전을 걸러낸다 (단, 수직축 둘레 회전은 중력 방향이 변하지 않아 못 거른다).
+const STILL_ACCEL_SPREAD_G: f32 = 0.02;
 
 /// 바이어스 추적: 가속도 크기가 1g에서 이만큼 안이어야 정지로 본다.
-const STILL_ACCEL_G: f32 = 0.05;
+const STILL_ACCEL_NORM_G: f32 = 0.05;
 
-/// 바이어스 추적: 정지 조건이 이만큼 연속돼야 갱신을 시작한다 (틱, 0.5초).
-const STILL_TICKS: u32 = 50;
-
-/// 바이어스 추적: 정지 중 틱당 갱신 비율. 100Hz에서 0.002면 시상수 약 5초.
-const BIAS_RATE: f32 = 0.002;
+/// 바이어스 추적: 정지 중 틱당 창 평균 쪽으로 옮기는 비율. 0.01이면 시상수 약 1초.
+const BIAS_RATE: f32 = 0.01;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct V3 {
@@ -207,28 +213,69 @@ impl Orientation {
 /// 정지 상태에서 자이로 바이어스를 계속 추적한다.
 ///
 /// 부팅 캘리브레이션 뒤에도 수 0.1°/s의 바이어스가 남고, 보드가 데워지면 조금씩
-/// 바뀐다. 상대 모드에선 데드존이 가려주지만, 각도를 적분하는 절대 모드에선 이게
-/// 곧 좌우 드리프트 속도다. 보드가 가만히 있는 동안 남은 값을 천천히 흡수한다.
-#[derive(Default)]
+/// 바뀐다. 각도를 적분하는 절대 모드에서는 이게 곧 좌우 드리프트 속도다. 잘못된
+/// 재캘리브레이션으로 영점이 크게 틀어진 경우도 보드를 내려놓으면 스스로 바로잡는다.
+///
+/// 처음에는 "보정한 각속도가 작으면 정지"로 판정했는데, 그러면 영점이 판정 문턱보다
+/// 크게 틀어졌을 때 정지해 있어도 움직이는 것으로 보여 영영 보정하지 않았다. 그래서
+/// 원시값이 거의 변하지 않는지(흔들림 폭)로 판정하고, 그 구간의 평균으로 영점을 옮긴다.
 pub struct BiasTracker {
-    still_ticks: u32,
+    gyro: [V3; STILL_WINDOW],
+    accel: [V3; STILL_WINDOW],
+    len: usize,
+    head: usize,
+}
+
+impl Default for BiasTracker {
+    fn default() -> Self {
+        let zero = V3::new(0.0, 0.0, 0.0);
+        Self {
+            gyro: [zero; STILL_WINDOW],
+            accel: [zero; STILL_WINDOW],
+            len: 0,
+            head: 0,
+        }
+    }
 }
 
 impl BiasTracker {
-    /// `raw_dps`는 바이어스를 빼기 전 자이로 값. 정지가 이어지면 `bias`를 갱신한다.
-    pub fn update(&mut self, raw_dps: V3, bias: &mut V3, accel_g: V3) {
-        let c = raw_dps - *bias;
-        let still = c.x.abs() < STILL_DPS
-            && c.y.abs() < STILL_DPS
-            && c.z.abs() < STILL_DPS
-            && (accel_g.norm() - 1.0).abs() < STILL_ACCEL_G;
-        self.still_ticks = if still {
-            self.still_ticks.saturating_add(1)
-        } else {
-            0
-        };
-        if self.still_ticks >= STILL_TICKS {
-            *bias = *bias + c * BIAS_RATE;
+    /// `raw_dps`는 바이어스를 빼기 전 자이로 값. 최근 창이 정지 상태면 `bias`를 창의
+    /// 평균 쪽으로 옮기고 true를 돌려준다.
+    pub fn update(&mut self, raw_dps: V3, bias: &mut V3, accel_g: V3) -> bool {
+        self.gyro[self.head] = raw_dps;
+        self.accel[self.head] = accel_g;
+        self.head = (self.head + 1) % STILL_WINDOW;
+        self.len = (self.len + 1).min(STILL_WINDOW);
+        if self.len < STILL_WINDOW || (accel_g.norm() - 1.0).abs() >= STILL_ACCEL_NORM_G {
+            return false;
         }
+        let (g_lo, g_hi, g_sum) = span(&self.gyro);
+        let (a_lo, a_hi, _) = span(&self.accel);
+        let g = g_hi - g_lo;
+        let a = a_hi - a_lo;
+        let still = g.x < STILL_GYRO_SPREAD_DPS
+            && g.y < STILL_GYRO_SPREAD_DPS
+            && g.z < STILL_GYRO_SPREAD_DPS
+            && a.x < STILL_ACCEL_SPREAD_G
+            && a.y < STILL_ACCEL_SPREAD_G
+            && a.z < STILL_ACCEL_SPREAD_G;
+        if still {
+            let mean = g_sum * (1.0 / STILL_WINDOW as f32);
+            *bias = *bias + (mean - *bias) * BIAS_RATE;
+        }
+        still
     }
+}
+
+/// 축별 최솟값, 최댓값, 합
+fn span(v: &[V3]) -> (V3, V3, V3) {
+    let mut lo = v[0];
+    let mut hi = v[0];
+    let mut sum = V3::new(0.0, 0.0, 0.0);
+    for s in v {
+        lo = V3::new(lo.x.min(s.x), lo.y.min(s.y), lo.z.min(s.z));
+        hi = V3::new(hi.x.max(s.x), hi.y.max(s.y), hi.z.max(s.z));
+        sum = sum + *s;
+    }
+    (lo, hi, sum)
 }
