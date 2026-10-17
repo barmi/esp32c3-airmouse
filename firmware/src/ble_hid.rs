@@ -1,3 +1,4 @@
+use crate::pointer::ABS_MAX;
 use esp32_nimble::{
     enums::*, hid::*, utilities::mutex::Mutex, BLEAdvertisementData, BLECharacteristic, BLEDevice,
     BLEHIDDevice, BLEServer,
@@ -11,7 +12,15 @@ const ABS_ID: u8 = 0x02;
 
 /// 리포트 디스크립터: 두 개의 포인터를 선언한다.
 /// - Report ID 1: 표준 3버튼 + X/Y 상대 이동 + 휠 (상대 모드)
-/// - Report ID 2: 3버튼 + X/Y 절대 좌표(0~32767) + 휠 (절대 모드)
+/// - Report ID 2: 펜 디지타이저 — 팁·배럴 스위치 + X/Y 절대 좌표(0~32767) (절대 모드)
+///
+/// 절대 쪽을 일반 마우스(Button 페이지 버튼)로 선언하면 macOS에서 클릭이 깨진다.
+/// macOS의 IOHIDEventDriver는 장치에 상대 이동 요소가 있으면 Button 페이지 버튼을
+/// 전부 상대 포인터에 붙이고, 버튼 상태를 계산할 때 방금 온 리포트인지 따지지 않고
+/// 모든 버튼 요소의 마지막 값을 쓴다. 그 결과 절대 리포트 하나마다 상대 이벤트
+/// (버튼 눌림)와 절대 이벤트(버튼 0)가 연달아 나가 눌림/뗌이 반복되고, 상대 모드
+/// 에서는 절대 쪽 버튼의 옛 값(0)이 눌림을 덮어쓴다. 펜의 팁·배럴 스위치는
+/// Digitizer 페이지라 디지타이저 경로에 남아 이런 섞임이 없다.
 ///
 /// 이 구조를 바꾸면 호스트가 캐시한 디스크립터와 어긋나므로 기기를 지우고 다시
 /// 페어링해야 한다.
@@ -44,23 +53,24 @@ const HID_REPORT_DESCRIPTOR: &[u8] = hid!(
     (HIDINPUT, 0x06),        //     Data,Var,Rel
     (END_COLLECTION),        //   /Physical
     (END_COLLECTION),        // /Application
-    // ------------------------------------------------- 절대 좌표 포인터
-    (USAGE_PAGE, 0x01),            // Generic Desktop
-    (USAGE, 0x02),                 // Mouse
+    // ------------------------------------------------- 절대 좌표: 펜 디지타이저
+    // 일반 버튼(Button 페이지)을 두면 macOS가 상대 포인터 쪽에 붙여버려 클릭이
+    // 깨지므로, 펜의 팁·배럴 스위치(Digitizer 페이지)로 버튼을 보낸다. 위 설명 참고.
+    (USAGE_PAGE, 0x0D),            // Digitizer
+    (USAGE, 0x02),                 // Pen
     (COLLECTION, 0x01),            // Application
-    (USAGE, 0x01),                 //   Pointer
-    (COLLECTION, 0x00),            //   Physical
     (REPORT_ID, ABS_ID),           //
-    (USAGE_PAGE, 0x09),            //     Buttons
-    (USAGE_MINIMUM, 0x01),         //
-    (USAGE_MAXIMUM, 0x03),         //
+    (USAGE, 0x20),                 //   Stylus
+    (COLLECTION, 0x00),            //   Physical
+    (USAGE, 0x42),                 //     Tip Switch    → 좌클릭
+    (USAGE, 0x44),                 //     Barrel Switch → 우클릭
+    (USAGE, 0x32),                 //     In Range
     (LOGICAL_MINIMUM, 0x00),       //
     (LOGICAL_MAXIMUM, 0x01),       //
     (REPORT_SIZE, 0x01),           //
-    (REPORT_COUNT, 0x03),          //     버튼 3개
+    (REPORT_COUNT, 0x03),          //
     (HIDINPUT, 0x02),              //     Data,Var,Abs
-    (REPORT_SIZE, 0x05),           //     패딩 5비트
-    (REPORT_COUNT, 0x01),          //
+    (REPORT_COUNT, 0x05),          //     패딩 5비트
     (HIDINPUT, 0x03),              //     Const,Var,Abs
     (USAGE_PAGE, 0x01),            //     Generic Desktop
     (USAGE, 0x30),                 //     X
@@ -69,13 +79,7 @@ const HID_REPORT_DESCRIPTOR: &[u8] = hid!(
     (LOGICAL_MAXIMUM, 0xFF, 0x7F), //     32767 (pointer::ABS_MAX와 같아야 함)
     (REPORT_SIZE, 0x10),           //     16비트
     (REPORT_COUNT, 0x02),          //
-    (HIDINPUT, 0x02),              //     Data,Var,Abs ← 절대 좌표
-    (USAGE, 0x38),                 //     Wheel
-    (LOGICAL_MINIMUM, 0x81),       //     -127 (전역 값이라 다시 지정)
-    (LOGICAL_MAXIMUM, 0x7F),       //     127
-    (REPORT_SIZE, 0x08),           //
-    (REPORT_COUNT, 0x01),          //
-    (HIDINPUT, 0x06),              //     Data,Var,Rel
+    (HIDINPUT, 0x02),              //     Data,Var,Abs
     (END_COLLECTION),              //   /Physical
     (END_COLLECTION),              // /Application
 );
@@ -91,18 +95,34 @@ pub struct MouseReport {
     pub wheel: i8,
 }
 
-/// HID 절대 좌표 입력 리포트. 디스크립터의 Report ID 2와 필드 순서가 같아야 한다.
+/// 펜 스위치 비트 (Report ID 2 첫 바이트)
+const PEN_TIP: u8 = 0x01;
+const PEN_BARREL: u8 = 0x02;
+const PEN_IN_RANGE: u8 = 0x04;
+
+/// macOS는 디지타이저 절대 좌표의 양 끝을 합쳐 15%(한쪽 7.5%) 잘라내고 나머지를
+/// 화면 전체에 펼친다 (IOHIDEventDriver의 kDefaultAbsoluteAxisRemovalPercentage).
+/// 그대로 보내면 92.5%에서 이미 화면 끝에 닿고 가운데 기준 배율이 18% 늘어나므로,
+/// 잘려 나갈 몫만큼 안쪽으로 줄여 보내 캘리브레이션한 모서리가 화면 모서리에 정확히
+/// 오게 한다. 가장자리를 자르지 않는 OS에서는 0으로 바꿔야 끝까지 간다.
+const HOST_EDGE_REMOVAL_PERCENT: u32 = 15;
+
+/// 펜 입력 리포트. 디스크립터의 Report ID 2와 필드 순서가 같아야 한다.
 /// 리틀 엔디언으로 보내야 하는데 ESP32-C3(RISC-V)가 리틀 엔디언이라 그대로 쓴다.
 #[derive(IntoBytes, Immutable, Clone, Copy, Default)]
 #[repr(C, packed)]
-pub struct AbsReport {
-    /// bit0=좌클릭, bit1=우클릭, bit2=휠클릭
-    pub buttons: u8,
-    /// 0..=32767, 화면 왼쪽 → 오른쪽
-    pub x: u16,
-    /// 0..=32767, 화면 위 → 아래
-    pub y: u16,
-    pub wheel: i8,
+struct PenReport {
+    /// bit0=팁(좌클릭), bit1=배럴(우클릭), bit2=근접(In Range)
+    switches: u8,
+    x: u16,
+    y: u16,
+}
+
+/// 0..=ABS_MAX 위치를 호스트가 잘라낼 가장자리만큼 안쪽으로 줄인다.
+fn to_host_logical(pos: u16) -> u16 {
+    let max = ABS_MAX as u32;
+    let margin = max * HOST_EDGE_REMOVAL_PERCENT / 200;
+    (margin + pos.min(ABS_MAX) as u32 * (max - 2 * margin) / max) as u16
 }
 
 /// BLE HID(HOGP) 마우스.
@@ -185,7 +205,25 @@ impl BleMouse {
         self.input_abs.lock().subscribed_count() > 0
     }
 
-    pub fn send_abs(&mut self, report: &AbsReport) {
+    /// 절대 좌표 모드 전송. `buttons`는 MouseReport와 같은 비트(좌=0x01, 우=0x02)이고
+    /// 펜의 팁·배럴 스위치로 바뀐다. `x`, `y`는 0..=ABS_MAX (화면 왼쪽 위가 0).
+    /// `in_range`를 false로 보내면 펜이 근접 범위를 벗어난 것으로 알린다(모드 종료 시).
+    pub fn send_pen(&mut self, buttons: u8, x: u16, y: u16, in_range: bool) {
+        let mut switches = 0;
+        if buttons & 0x01 != 0 {
+            switches |= PEN_TIP;
+        }
+        if buttons & 0x02 != 0 {
+            switches |= PEN_BARREL;
+        }
+        if in_range {
+            switches |= PEN_IN_RANGE;
+        }
+        let report = PenReport {
+            switches,
+            x: to_host_logical(x),
+            y: to_host_logical(y),
+        };
         self.input_abs.lock().set_value(report.as_bytes()).notify();
     }
 }

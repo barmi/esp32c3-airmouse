@@ -6,7 +6,7 @@ mod orientation;
 mod pointer;
 mod status_led;
 
-use ble_hid::{AbsReport, BleMouse, MouseReport};
+use ble_hid::{BleMouse, MouseReport};
 use button::{Button, Gesture, HoldGesture, Repeater};
 use esp_idf_svc::hal::{
     delay::FreeRtos,
@@ -224,19 +224,16 @@ fn main() -> anyhow::Result<()> {
                 Mode::CalTopLeft | Mode::CalBottomRight { .. } => {}
             },
             Gesture::Long => {
-                // 버튼을 누른 채 모드가 바뀌면 이전 리포트 쪽에 눌림이 남으므로 떼어 준다
-                if prev_buttons != 0 && mouse.connected() {
+                if mouse.connected() {
                     match &mode {
-                        Mode::Relative => mouse.send(&MouseReport::default()),
+                        // 버튼을 누른 채 모드가 바뀌면 이전 리포트 쪽에 눌림이 남으므로 뗀다
+                        Mode::Relative if prev_buttons != 0 => mouse.send(&MouseReport::default()),
+                        // 펜이 근접 범위를 벗어났다고 알린다. 스위치도 함께 풀린다.
                         Mode::Absolute(cal) => {
                             let (x, y) = cal.position(angles.angles());
-                            mouse.send_abs(&AbsReport {
-                                x,
-                                y,
-                                ..Default::default()
-                            });
+                            mouse.send_pen(0, x, y, false);
                         }
-                        Mode::CalTopLeft | Mode::CalBottomRight { .. } => {}
+                        _ => {}
                     }
                 }
                 prev_buttons = 0;
@@ -354,14 +351,18 @@ fn main() -> anyhow::Result<()> {
                     let (x, y) = cal.position(angles.angles());
                     let moved = x.abs_diff(last_abs.0) >= ABS_SEND_THRESHOLD
                         || y.abs_diff(last_abs.1) >= ABS_SEND_THRESHOLD;
-                    if moved || wheel != 0 || buttons != prev_buttons {
-                        mouse.send_abs(&AbsReport {
-                            buttons,
-                            x,
-                            y,
-                            wheel,
-                        });
+                    if moved || buttons != prev_buttons {
+                        mouse.send_pen(buttons, x, y, true);
                         last_abs = (x, y);
+                    }
+                    // 펜 리포트에는 휠이 없어 상대 리포트로 보낸다. 다만 상대 리포트의
+                    // 버튼 0이 펜의 눌림과 충돌해 드래그를 끊을 수 있으므로, 버튼을
+                    // 누르지 않았을 때만 보낸다.
+                    if wheel != 0 && buttons == 0 {
+                        mouse.send(&MouseReport {
+                            wheel,
+                            ..Default::default()
+                        });
                     }
                 }
                 // 캘리브레이션 중에는 아무것도 보내지 않는다 (좌클릭이 호스트로 가지 않도록)
