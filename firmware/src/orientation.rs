@@ -27,6 +27,11 @@ const ACCEL_GATE_G: f32 = 0.15;
 /// "위"가 평행). 그 근처에서는 보드 X축으로 대신한다.
 const DEGENERATE_LIMIT: f32 = 0.2;
 
+/// 방위각 변화율은 좌우 각속도를 cos(고도각)으로 나눈 값이라 위·아래를 크게
+/// 가리킬수록 커진다(천정에서 발산). 화면을 가리킬 일이 없는 고도각 60° 이상에서
+/// 잡음이 증폭되지 않도록 cos를 이 값 아래로 내리지 않는다.
+const MIN_COS_ELEVATION: f32 = 0.5;
+
 /// 바이어스 추적: 보정 후 각속도가 모든 축에서 이보다 작아야 정지로 본다(dps).
 /// 손에 쥔 채 아주 천천히 돌리는 동작까지 정지로 오인하면 그 회전이 바이어스로
 /// 흡수되어 커서가 덜 움직이므로 낮게 잡는다.
@@ -146,21 +151,44 @@ impl Orientation {
         }
     }
 
-    /// 실제 좌우(yaw)·상하(pitch) 회전 속도(dps).
+    /// 가리키는 방향이 움직이는 각속도를 좌우·상하 성분으로 나눈다(dps).
     ///
-    /// 좌우는 "위" 축 둘레의 회전, 상하는 수평이면서 가리키는 방향에 수직인 축
-    /// 둘레의 회전이다. 보드가 수평이면 기존 축(보드 Z, X)과 같고, 기울여 쥐면
-    /// 방향만 바로잡힌다. 크기는 보존되므로 감도·데드존 동작은 그대로다.
+    /// 두 축 모두 가리키는 축에 수직이다. 좌우축은 "위"에서 가리키는 축 성분을 뺀
+    /// 방향, 상하축은 수평이면서 가리키는 방향에 수직인 방향이다. 그래서 보드를
+    /// 옆으로 기울여 쥐어도 방향이 맞고, 위·아래를 가리킨 채 손목을 비틀어도(가리키는
+    /// 축 둘레 회전) 커서가 움직이지 않는다. 보드가 수평이면 기존 축(보드 Z, X)과 같다.
+    ///
+    /// 좌우축을 "위" 그대로 쓰면 위를 가리킨 채 비틀 때 회전의 sin(고도각)만큼이
+    /// 좌우로 새어 든다. 고도각 30°면 절반이다.
     pub fn world_rates(&self, gyro_dps: V3) -> (f32, f32) {
-        let yaw = gyro_dps.dot(self.up);
-        let h = POINT_AXIS.cross(self.up);
-        let hn = h.norm();
-        let pitch = if hn > DEGENERATE_LIMIT {
-            gyro_dps.dot(h * (1.0 / hn))
-        } else {
-            gyro_dps.x
-        };
-        (yaw, pitch)
+        match self.pointing_frame() {
+            Some((h, v, _)) => (gyro_dps.dot(h), gyro_dps.dot(v)),
+            None => (gyro_dps.z, gyro_dps.x),
+        }
+    }
+
+    /// 가리키는 방향의 방위각 변화율(dps).
+    ///
+    /// 좌우 각속도를 cos(고도각)으로 나눈 값으로, 방위각의 정확한 시간 미분이다.
+    /// 그래서 적분해도 움직인 경로에 따라 어긋나지 않는다 — 같은 곳을 가리키면 같은
+    /// 각도가 나온다. 수직인 화면에서 가로 위치는 방위각으로 정해지므로 절대 좌표
+    /// 모드가 이 값을 적분한다.
+    pub fn azimuth_rate(&self, gyro_dps: V3) -> f32 {
+        match self.pointing_frame() {
+            Some((h, _, c)) => gyro_dps.dot(h) / c.max(MIN_COS_ELEVATION),
+            None => 0.0,
+        }
+    }
+
+    /// (좌우축, 상하축, cos(고도각)). 가리키는 축이 수직에 가까우면 None.
+    fn pointing_frame(&self) -> Option<(V3, V3, f32)> {
+        let up_perp = self.up - POINT_AXIS * POINT_AXIS.dot(self.up);
+        let c = up_perp.norm();
+        if c < DEGENERATE_LIMIT {
+            return None;
+        }
+        let inv = 1.0 / c;
+        Some((up_perp * inv, POINT_AXIS.cross(self.up) * inv, c))
     }
 
     /// 보드를 옆으로 기울인 각도(도). 수평이면 0. 상태 확인용.

@@ -182,7 +182,9 @@ fn main() -> anyhow::Result<()> {
         // 기울기 보정: 보드를 옆으로 기울여 쥐어도 실제 좌우·상하로 나눈다.
         // 수평이면 기존 축(yaw=Z, pitch=X)과 같다.
         let (yaw_rate, pitch_rate) = orient.world_rates(gyro);
-        angles.update(yaw_rate, orient.elevation_deg(), dt);
+        // 절대 모드는 방위각의 정확한 미분을 적분한다. 좌우 각속도를 그대로 적분하면
+        // 위·아래를 가리킨 채 움직인 경로에 따라 어긋난다.
+        angles.update(orient.azimuth_rate(gyro), orient.elevation_deg(), dt);
 
         // ------------------------------------------------------------ BOOT 버튼
         if btn_boot.just_pressed() {
@@ -241,6 +243,11 @@ fn main() -> anyhow::Result<()> {
                 swallow_left = btn_left.pressed();
                 mode = match mode {
                     Mode::Relative => {
+                        if mouse.connected() && !mouse.abs_subscribed() {
+                            log::warn!(
+                                "호스트가 절대 좌표 리포트를 구독하지 않았습니다. Mac에서 기기를 지우고 다시 페어링하세요"
+                            );
+                        }
                         log::info!(
                             "화면 캘리브레이션: 화면 왼쪽 위 모서리를 가리키고 좌클릭하세요"
                         );
@@ -263,7 +270,7 @@ fn main() -> anyhow::Result<()> {
                 Mode::CalTopLeft => {
                     swallow_left = true;
                     log::info!(
-                        "왼쪽 위 기록 (yaw={:+.1}° el={:+.1}°). 이제 오른쪽 아래 모서리를 가리키고 좌클릭하세요",
+                        "왼쪽 위 기록 (방위각={:+.1}° 고도각={:+.1}°). 이제 오른쪽 아래 모서리를 가리키고 좌클릭하세요",
                         pointed.0,
                         pointed.1
                     );
@@ -275,7 +282,9 @@ fn main() -> anyhow::Result<()> {
                         Some(cal) => {
                             let (w, h) = cal.span_deg();
                             log::info!(
-                                "화면 캘리브레이션 완료: 화면이 가로 {w:.1}°, 세로 {h:.1}°를 차지합니다. 절대 좌표 모드 시작"
+                                "화면 캘리브레이션 완료: 오른쪽 아래 (방위각={:+.1}° 고도각={:+.1}°), 화면이 가로 {w:.1}°, 세로 {h:.1}°를 차지합니다. 절대 좌표 모드 시작",
+                                pointed.0,
+                                pointed.1
                             );
                             last_abs = (u16::MAX, u16::MAX);
                             mode = Mode::Absolute(cal);
@@ -360,6 +369,25 @@ fn main() -> anyhow::Result<()> {
             }
         }
         prev_buttons = buttons;
+
+        // 절대 모드 진단 (0.5초마다): 가리키는 각도와 실제로 보내는 좌표.
+        // 커서 위치가 이상할 때 펌웨어 쪽 값인지 호스트 쪽 해석인지 가른다.
+        if let Mode::Absolute(cal) = &mode {
+            if tick % 50 == 0 {
+                let a = angles.angles();
+                let (x, y) = cal.position(a);
+                log::info!(
+                    "절대: 방위각={:+6.1}° 고도각={:+5.1}° → x={:5} ({:3.0}%) y={:5} ({:3.0}%) 구독={}",
+                    a.0,
+                    a.1,
+                    x,
+                    x as f32 / 327.67,
+                    y,
+                    y as f32 / 327.67,
+                    mouse.abs_subscribed()
+                );
+            }
+        }
 
         // 5초에 한 번 상태 로그 (시리얼이 밀리지 않게)
         if tick % 500 == 0 {

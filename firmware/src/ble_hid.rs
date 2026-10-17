@@ -120,6 +120,10 @@ impl BleMouse {
     pub fn new(device_name: &str) -> anyhow::Result<Self> {
         let device = BLEDevice::take();
 
+        // 연결된 뒤 호스트가 표시하는 이름은 광고 패킷의 이름이 아니라 GAP 기기 이름
+        // 특성(0x2A00)이다. 지정하지 않으면 NimBLE 기본값 "nimble"이 나간다.
+        BLEDevice::set_device_name(device_name)?;
+
         // HID 프로파일은 본딩 + 암호화가 필수 (macOS/Windows 공통)
         device
             .security()
@@ -172,6 +176,13 @@ impl BleMouse {
             .lock()
             .set_value(report.as_bytes())
             .notify();
+    }
+
+    /// 호스트가 절대 좌표 리포트를 구독했는지. 디스크립터가 바뀐 펌웨어로 올린 뒤
+    /// 재페어링하지 않으면 호스트는 예전 구조를 기억해 이 리포트를 구독하지 않고,
+    /// 그 상태에서 보낸 절대 좌표는 아무 데도 가지 않는다.
+    pub fn abs_subscribed(&self) -> bool {
+        self.input_abs.lock().subscribed_count() > 0
     }
 
     pub fn send_abs(&mut self, report: &AbsReport) {
