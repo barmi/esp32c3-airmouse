@@ -16,8 +16,14 @@ pub enum Status {
     Calibrating,
     /// BLE 광고 중 (호스트 미연결)
     Advertising,
-    /// 연결됨 - 정상 동작
+    /// 연결됨 - 상대 이동 모드
     Connected,
+    /// 연결됨 - 절대 좌표 모드
+    ConnectedAbsolute,
+    /// 화면 캘리브레이션 1단계 - 왼쪽 위 모서리를 가리키고 좌클릭
+    ScreenCalTopLeft,
+    /// 화면 캘리브레이션 2단계 - 오른쪽 아래 모서리를 가리키고 좌클릭
+    ScreenCalBottomRight,
 }
 
 impl Status {
@@ -26,6 +32,9 @@ impl Status {
             Status::Calibrating => RGB8::new(255, 140, 0), // 주황
             Status::Advertising => RGB8::new(0, 80, 255),  // 파랑
             Status::Connected => RGB8::new(0, 255, 60),    // 초록
+            Status::ConnectedAbsolute => RGB8::new(0, 200, 255), // 하늘
+            Status::ScreenCalTopLeft => RGB8::new(220, 0, 255), // 보라
+            Status::ScreenCalBottomRight => RGB8::new(0, 200, 255), // 하늘 (깜빡임으로 구분)
         }
     }
 }

@@ -92,3 +92,52 @@ impl Repeater {
         false
     }
 }
+
+/// 짧게/길게 누름 구분 결과.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Gesture {
+    None,
+    /// 기준 시간 전에 손을 뗐다 (뗄 때 발생)
+    Short,
+    /// 기준 시간만큼 누르고 있었다 (손을 떼기 전에 바로 발생)
+    Long,
+}
+
+/// 한 버튼에 두 가지 동작을 싣기 위한 누름 시간 판별기.
+///
+/// 길게 누름은 기준 시간에 닿는 순간 바로 발생해 손을 떼기 전에 반응이 온다.
+/// 짧게 누름은 뗄 때 판별되므로 누르는 즉시 반응해야 하는 클릭에는 쓰지 않는다.
+pub struct HoldGesture {
+    long_ticks: u32,
+    held_ticks: u32,
+    long_fired: bool,
+}
+
+impl HoldGesture {
+    pub fn new(long_ms: u32, loop_period_ms: u32) -> Self {
+        Self {
+            long_ticks: long_ms.div_ceil(loop_period_ms),
+            held_ticks: 0,
+            long_fired: false,
+        }
+    }
+
+    pub fn tick(&mut self, button: &Button) -> Gesture {
+        if button.pressed() {
+            self.held_ticks += 1;
+            if !self.long_fired && self.held_ticks >= self.long_ticks {
+                self.long_fired = true;
+                return Gesture::Long;
+            }
+            return Gesture::None;
+        }
+        let gesture = if self.held_ticks > 0 && !self.long_fired {
+            Gesture::Short
+        } else {
+            Gesture::None
+        };
+        self.held_ticks = 0;
+        self.long_fired = false;
+        gesture
+    }
+}

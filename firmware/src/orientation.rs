@@ -27,6 +27,20 @@ const ACCEL_GATE_G: f32 = 0.15;
 /// "위"가 평행). 그 근처에서는 보드 X축으로 대신한다.
 const DEGENERATE_LIMIT: f32 = 0.2;
 
+/// 바이어스 추적: 보정 후 각속도가 모든 축에서 이보다 작아야 정지로 본다(dps).
+/// 손에 쥔 채 아주 천천히 돌리는 동작까지 정지로 오인하면 그 회전이 바이어스로
+/// 흡수되어 커서가 덜 움직이므로 낮게 잡는다.
+const STILL_DPS: f32 = 0.8;
+
+/// 바이어스 추적: 가속도 크기가 1g에서 이만큼 안이어야 정지로 본다.
+const STILL_ACCEL_G: f32 = 0.05;
+
+/// 바이어스 추적: 정지 조건이 이만큼 연속돼야 갱신을 시작한다 (틱, 0.5초).
+const STILL_TICKS: u32 = 50;
+
+/// 바이어스 추적: 정지 중 틱당 갱신 비율. 100Hz에서 0.002면 시상수 약 5초.
+const BIAS_RATE: f32 = 0.002;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct V3 {
     pub x: f32,
@@ -152,5 +166,41 @@ impl Orientation {
     /// 보드를 옆으로 기울인 각도(도). 수평이면 0. 상태 확인용.
     pub fn roll_deg(&self) -> f32 {
         self.up.x.atan2(self.up.z) * RAD2DEG
+    }
+
+    /// 가리키는 축의 고도각(도). 위를 가리킬수록 한쪽으로 커진다. 중력 기준이라
+    /// 시간이 지나도 흐르지 않는다. 부호는 보드 방향에 따라 다를 수 있지만 2점
+    /// 화면 캘리브레이션이 흡수한다.
+    pub fn elevation_deg(&self) -> f32 {
+        POINT_AXIS.dot(self.up).clamp(-1.0, 1.0).asin() * RAD2DEG
+    }
+}
+
+/// 정지 상태에서 자이로 바이어스를 계속 추적한다.
+///
+/// 부팅 캘리브레이션 뒤에도 수 0.1°/s의 바이어스가 남고, 보드가 데워지면 조금씩
+/// 바뀐다. 상대 모드에선 데드존이 가려주지만, 각도를 적분하는 절대 모드에선 이게
+/// 곧 좌우 드리프트 속도다. 보드가 가만히 있는 동안 남은 값을 천천히 흡수한다.
+#[derive(Default)]
+pub struct BiasTracker {
+    still_ticks: u32,
+}
+
+impl BiasTracker {
+    /// `raw_dps`는 바이어스를 빼기 전 자이로 값. 정지가 이어지면 `bias`를 갱신한다.
+    pub fn update(&mut self, raw_dps: V3, bias: &mut V3, accel_g: V3) {
+        let c = raw_dps - *bias;
+        let still = c.x.abs() < STILL_DPS
+            && c.y.abs() < STILL_DPS
+            && c.z.abs() < STILL_DPS
+            && (accel_g.norm() - 1.0).abs() < STILL_ACCEL_G;
+        self.still_ticks = if still {
+            self.still_ticks.saturating_add(1)
+        } else {
+            0
+        };
+        if self.still_ticks >= STILL_TICKS {
+            *bias = *bias + c * BIAS_RATE;
+        }
     }
 }

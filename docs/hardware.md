@@ -12,7 +12,7 @@
 | I2C 버스 | 400kHz | SDA=`GPIO7`, SCL=`GPIO8` |
 | RGB LED | WS2812 (상태 표시용) | `GPIO2` |
 | 단색 LED | (미사용) | `GPIO10` |
-| BOOT 버튼 | 온보드 → 자이로 재캘리브레이션 | `GPIO9` (active-low, 내부 풀업) |
+| BOOT 버튼 | 온보드 → 짧게: 재캘리브레이션/리센터, 길게: 모드 전환 | `GPIO9` (active-low, 내부 풀업) |
 | 클릭·스크롤 버튼 | **외부 택트 스위치 4개** (직접 배선) | `GPIO3`~`GPIO6` |
 | 전원 | USB-C, LiPo 충전(MCP73831) | 배터리 전압 측정 회로 없음 |
 
