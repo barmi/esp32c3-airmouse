@@ -23,7 +23,7 @@ use mapping::{
 };
 use orientation::{BiasTracker, Orientation, V3};
 use pointer::{AngleTracker, ScreenCal, TrackerConfig};
-use power::{PowerPolicy, PowerState, IDLE_LOOP_PERIOD_MS, MOTION_DPS};
+use power::{PowerPolicy, PowerState, SleepButton, SleepGesture, IDLE_LOOP_PERIOD_MS, MOTION_DPS};
 use status_led::{Status, StatusLed};
 use std::time::Instant;
 
@@ -132,10 +132,13 @@ fn main() -> anyhow::Result<()> {
     if let Err(e) = sleep::init() {
         log::warn!("전원 관리 설정 실패: {e} — 절전 없이 계속합니다");
     }
+    // 최근 부팅 기록: 시리얼 없이 돌다가 생긴 재부팅의 이유를 USB를 연결한 뒤에 볼 수 있다.
+    // 상태 로그에도 짧게 붙인다 — 시리얼을 나중에 열어도(기본 설정으로 열면 리셋되지 않음)
+    // 5초 안에 보인다.
+    let boot_history = sleep::record_boot();
+    log::info!("이번 부팅: {}", boot_history[0].describe());
+    let boot_summary = sleep::summarize(&boot_history);
     let woke = sleep::woke_from_deep_sleep();
-    if woke {
-        log::info!("딥슬립에서 깨어남 (버튼)");
-    }
 
     let p = Peripherals::take()?;
 
@@ -230,6 +233,11 @@ fn main() -> anyhow::Result<()> {
     let mut period_start_ms = 0u64;
     let mut imu_errors = 0u32;
     let mut timer = LoopTimer::new();
+    // 버튼 딥슬립: 위·아래 스크롤 버튼을 함께 길게 누른다
+    let mut sleep_button = SleepButton::default();
+    let mut sleep_armed = false;
+    // 위·아래를 함께 누른 뒤 둘 다 뗄 때까지 스크롤 출력을 막는다
+    let mut scroll_combo = false;
     loop {
         let now_ms = started.elapsed().as_millis() as u64;
 
@@ -455,13 +463,34 @@ fn main() -> anyhow::Result<()> {
                 "딥슬립 진입 (마지막 사용 후 {}초, 연결={connected}). 좌·우클릭이나 스크롤↓ 버튼으로 깨웁니다",
                 policy.idle_for_ms(now_ms) / 1000
             );
-            mouse.shutdown();
-            led.off();
-            if let Err(e) = imu.sleep() {
-                log::warn!("IMU 절전 실패: {e}");
-            }
-            sleep::deep_sleep(bias);
+            go_to_deep_sleep(&mut mouse, &mut led, &mut imu, bias);
         }
+
+        // 위·아래 스크롤 버튼을 함께 2초 누르면 LED가 빨갛게 켜지고, 손을 떼면 딥슬립
+        let both_scroll = btn_scroll_up.pressed() && btn_scroll_down.pressed();
+        let any_pressed = [
+            &btn_left,
+            &btn_right,
+            &btn_scroll_up,
+            &btn_scroll_down,
+            &btn_boot,
+        ]
+        .iter()
+        .any(|b| b.pressed());
+        match sleep_button.update(now_ms, both_scroll && !wake_guard, any_pressed) {
+            SleepGesture::Armed if !sleep_armed => {
+                sleep_armed = true;
+                log::info!("버튼 딥슬립 준비: 손을 떼면 잠듭니다");
+            }
+            SleepGesture::Sleep => {
+                log::info!("딥슬립 진입 (버튼). 좌·우클릭이나 스크롤↓ 버튼으로 깨웁니다");
+                go_to_deep_sleep(&mut mouse, &mut led, &mut imu, bias);
+            }
+            _ => {}
+        }
+        // 막지 않으면 두 버튼의 반복 스크롤이 번갈아 나가 화면이 위아래로 떨린다
+        scroll_combo =
+            both_scroll || (scroll_combo && (btn_scroll_up.pressed() || btn_scroll_down.pressed()));
 
         // ------------------------------------------------------------ 버튼/휠
         let mut buttons = 0u8;
@@ -480,13 +509,14 @@ fn main() -> anyhow::Result<()> {
         if down_repeat.tick(&btn_scroll_down) {
             wheel -= SCROLL_SIGN;
         }
-        if wake_guard {
+        if wake_guard || scroll_combo {
             wheel = 0;
         }
 
         // ------------------------------------------------------------ 상태 LED
         // 캘리브레이션은 빠른 깜빡임(0.3초), 광고 중은 느린 깜빡임(1초), 대기 중은 소등
         match &mode {
+            _ if sleep_armed => led.set(Status::SleepArmed, true),
             Mode::CalTopLeft => led.set(Status::ScreenCalTopLeft, now_ms % 300 < 150),
             Mode::CalBottomRight { .. } => {
                 led.set(Status::ScreenCalBottomRight, now_ms % 300 < 150)
@@ -591,7 +621,7 @@ fn main() -> anyhow::Result<()> {
             };
             let loop_hz = period_ticks as u64 * 1000 / (now_ms - period_start_ms).max(1);
             log::info!(
-                "connected={} 모드={} 전원={} 루프={loop_hz}Hz BLE={} USB={} | yaw={:+6.2} pitch={:+6.2} dps | 기울기={:+5.1}° | 각도 yaw={:+6.1}° el={:+5.1}° | bias=({:+.2},{:+.2},{:+.2}) 정지판정={}%",
+                "connected={} 모드={} 전원={} 루프={loop_hz}Hz BLE={} USB={} 부팅={boot_summary} | yaw={:+6.2} pitch={:+6.2} dps | 기울기={:+5.1}° | 각도 yaw={:+6.1}° el={:+5.1}° | bias=({:+.2},{:+.2},{:+.2}) 정지판정={}%",
                 connected,
                 mode.name(),
                 power.name(),
@@ -620,6 +650,22 @@ fn main() -> anyhow::Result<()> {
         };
         timer.wait(period);
     }
+}
+
+/// 딥슬립에 들어간다. BLE를 정리하고 LED와 IMU를 끈 뒤 잔다. 돌아오지 않는다 —
+/// 깨어나면 처음부터 부팅한다.
+fn go_to_deep_sleep(
+    mouse: &mut BleMouse,
+    led: &mut StatusLed<'_>,
+    imu: &mut imu::Imu<'_>,
+    bias: V3,
+) -> ! {
+    mouse.shutdown();
+    led.off();
+    if let Err(e) = imu.sleep() {
+        log::warn!("IMU 절전 실패: {e}");
+    }
+    sleep::deep_sleep(bias)
 }
 
 /// 부팅 시 정지 상태를 가정하고 자이로 바이어스를 잰다 (5ms 간격 200샘플).

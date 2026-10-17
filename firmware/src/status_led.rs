@@ -25,6 +25,8 @@ pub enum Status {
     ScreenCalTopLeft,
     /// 화면 캘리브레이션 2단계 - 오른쪽 아래 모서리를 가리키고 좌클릭
     ScreenCalBottomRight,
+    /// 버튼 딥슬립 준비 - 손을 떼면 잠든다
+    SleepArmed,
 }
 
 impl Status {
@@ -36,6 +38,7 @@ impl Status {
             Status::ConnectedAbsolute => RGB8::new(0, 200, 255), // 하늘
             Status::ScreenCalTopLeft => RGB8::new(220, 0, 255), // 보라
             Status::ScreenCalBottomRight => RGB8::new(0, 200, 255), // 하늘 (깜빡임으로 구분)
+            Status::SleepArmed => RGB8::new(255, 0, 0),    // 빨강
         }
     }
 }

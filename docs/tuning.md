@@ -137,6 +137,7 @@ const LOOP_PERIOD_MS: u32 = 10;
 | `UNCONNECTED_SLEEP_AFTER_MS` | 5분 | 호스트에 연결되지 못한 채 이만큼 지나면 딥슬립 |
 | `MOTION_DPS` | 2.0 | 이보다 빠른 회전은 사용으로 본다 (커서 데드존과 같은 값) |
 | `IDLE_LOOP_PERIOD_MS` | 50 | 대기 중 루프 주기 (상대 모드만) |
+| `SLEEP_HOLD_MS` | 2초 | 스크롤 ↑ + ↓를 함께 이만큼 누르면 버튼 딥슬립 준비 (LED 빨강) |
 
 | 증상 | 조정 |
 |---|---|

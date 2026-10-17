@@ -23,6 +23,10 @@ pub const UNCONNECTED_SLEEP_AFTER_MS: u64 = 5 * 60_000;
 /// 커서 데드존과 같은 값이라, 커서가 움직일 만한 회전이면 대기에서 깬다.
 pub const MOTION_DPS: f32 = 2.0;
 
+/// 위·아래 스크롤 버튼을 함께 이만큼 누르고 있으면 LED를 빨갛게 켜고, 손을 떼면
+/// 딥슬립에 들어간다 (ms). 평소에 둘을 함께 누를 일이 없어 실수로 잠들 일이 적다.
+pub const SLEEP_HOLD_MS: u64 = 2_000;
+
 /// 대기 모드의 루프 주기 (ms). 상대 모드에서만 쓴다 — 절대 모드는 각도를 적분하므로
 /// 샘플을 성기게 읽으면 움직이기 시작하는 순간의 각도가 어긋난다.
 pub const IDLE_LOOP_PERIOD_MS: u32 = 50;
@@ -98,5 +102,50 @@ impl PowerPolicy {
     /// 마지막으로 움직이거나 버튼을 누른 뒤 지난 시간 (ms)
     pub fn idle_for_ms(&self, now_ms: u64) -> u64 {
         now_ms.saturating_sub(self.last_activity_ms)
+    }
+}
+
+/// 버튼으로 딥슬립에 들어가는 동작의 진행 상태
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SleepGesture {
+    None,
+    /// 충분히 눌렀다. 손을 떼면 잠든다 (LED 빨강)
+    Armed,
+    /// 손을 뗐다. 지금 잠든다
+    Sleep,
+}
+
+/// 위·아래 스크롤 버튼을 함께 길게 눌러 딥슬립에 들어가는 동작.
+///
+/// 딥슬립 진입은 손을 뗀 뒤에 한다. 스크롤↓(GPIO5)는 딥슬립 기상 핀이라 누른 채
+/// 잠들면 바로 다시 깨어나기 때문이다. 한 번 준비되면 취소하지 않는다 — 떼는 순간 잔다.
+#[derive(Default)]
+pub struct SleepButton {
+    since_ms: Option<u64>,
+    armed: bool,
+}
+
+impl SleepButton {
+    /// 매 틱 호출한다. `both`: 위·아래 스크롤 버튼이 둘 다 눌림.
+    /// `any`: 버튼이 하나라도 눌림 (디바운스된 값 — 떼는 순간의 튐을 걸러야 한다).
+    pub fn update(&mut self, now_ms: u64, both: bool, any: bool) -> SleepGesture {
+        if self.armed {
+            if any {
+                return SleepGesture::Armed;
+            }
+            self.armed = false;
+            self.since_ms = None;
+            return SleepGesture::Sleep;
+        }
+        if both {
+            let since = *self.since_ms.get_or_insert(now_ms);
+            if now_ms.saturating_sub(since) >= SLEEP_HOLD_MS {
+                self.armed = true;
+                return SleepGesture::Armed;
+            }
+        } else {
+            self.since_ms = None;
+        }
+        SleepGesture::None
     }
 }

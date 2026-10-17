@@ -28,6 +28,22 @@ static SAVED_MAGIC: AtomicU32 = AtomicU32::new(0);
 #[link_section = ".rtc.data"]
 static SAVED_BIAS: [AtomicU32; 3] = [AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0)];
 
+/// 부팅 기록용. `.rtc_noinit`은 부트로더가 어떤 리셋에도 초기화하지 않아, 시리얼 포트를
+/// 열 때 걸리는 리셋(USB 코어 리셋) 뒤에도 남는다. 시리얼 없이 배터리로 돌다가 생긴
+/// 재부팅을 나중에 USB로 읽을 수 있다. 전원을 처음 넣으면 쓰레기 값이라 표시값으로 거른다.
+/// 최근 부팅 몇 번을 남길지. 기록을 읽으려고 시리얼을 열면 그 자체로 한 번 재부팅되므로
+/// 한 칸만 두면 보려던 기록이 덮어써진다.
+pub const BOOT_HISTORY: usize = 4;
+
+#[link_section = ".rtc_noinit"]
+static BOOT_LOG_MAGIC: AtomicU32 = AtomicU32::new(0);
+#[link_section = ".rtc_noinit"]
+static BOOT_LOG_COUNT: AtomicU32 = AtomicU32::new(0);
+/// 최근 것부터. 칸마다 (리셋 사유, 기상 원인, 깨운 GPIO 비트)
+#[link_section = ".rtc_noinit"]
+static BOOT_LOG: [[AtomicU32; 3]; BOOT_HISTORY] =
+    [const { [const { AtomicU32::new(0) }; 3] }; BOOT_HISTORY];
+
 /// 부팅 직후 한 번 호출한다. CPU 클럭 자동 조절과 자동 라이트 슬립을 켠다.
 ///
 /// 라이트 슬립은 태스크가 모두 대기 중일 때 ESP-IDF가 알아서 들어가고, 타이머나
@@ -58,9 +74,108 @@ pub fn keep_led_line_driven() {
     unsafe { sys::gpio_sleep_sel_dis(LED_PIN) };
 }
 
-/// 이번 부팅이 딥슬립에서 버튼으로 깨어난 것인지
+/// 이번 부팅이 딥슬립에서 깨어난 것인지
 pub fn woke_from_deep_sleep() -> bool {
-    unsafe { sys::esp_sleep_get_wakeup_cause() == sys::esp_sleep_source_t_ESP_SLEEP_WAKEUP_GPIO }
+    unsafe { sys::esp_reset_reason() == sys::esp_reset_reason_t_ESP_RST_DEEPSLEEP }
+}
+
+/// 한 번의 부팅이 왜 일어났는지: 리셋 사유, 딥슬립 기상 원인, 깨운 GPIO.
+#[derive(Clone, Copy)]
+pub struct BootInfo {
+    reset: u32,
+    wake: u32,
+    wake_pins: u32,
+}
+
+impl BootInfo {
+    fn current() -> Self {
+        unsafe {
+            Self {
+                reset: sys::esp_reset_reason(),
+                wake: sys::esp_sleep_get_wakeup_cause(),
+                wake_pins: sys::esp_sleep_get_gpio_wakeup_status() as u32,
+            }
+        }
+    }
+
+    /// 상태 로그에 붙일 짧은 표기 (예: "딥슬립/버튼GPIO3", "USB")
+    pub fn short(&self) -> String {
+        match self.reset {
+            sys::esp_reset_reason_t_ESP_RST_POWERON => "전원".into(),
+            sys::esp_reset_reason_t_ESP_RST_SW => "재시작".into(),
+            sys::esp_reset_reason_t_ESP_RST_PANIC => "패닉".into(),
+            sys::esp_reset_reason_t_ESP_RST_INT_WDT
+            | sys::esp_reset_reason_t_ESP_RST_TASK_WDT
+            | sys::esp_reset_reason_t_ESP_RST_WDT => "워치독".into(),
+            sys::esp_reset_reason_t_ESP_RST_BROWNOUT => "저전압".into(),
+            sys::esp_reset_reason_t_ESP_RST_USB => "USB".into(),
+            sys::esp_reset_reason_t_ESP_RST_DEEPSLEEP => {
+                let mut text = match self.wake {
+                    sys::esp_sleep_source_t_ESP_SLEEP_WAKEUP_GPIO => "딥슬립/버튼".to_string(),
+                    sys::esp_sleep_source_t_ESP_SLEEP_WAKEUP_TIMER => "딥슬립/타이머".to_string(),
+                    other => format!("딥슬립/기상{other}"),
+                };
+                for pin in (0..32).filter(|p| self.wake_pins & (1 << p) != 0) {
+                    text += &format!("GPIO{pin}");
+                }
+                text
+            }
+            other => format!("리셋{other}"),
+        }
+    }
+
+    pub fn describe(&self) -> String {
+        let reset = match self.reset {
+            sys::esp_reset_reason_t_ESP_RST_POWERON => "전원 켜짐",
+            sys::esp_reset_reason_t_ESP_RST_EXT => "외부 리셋",
+            sys::esp_reset_reason_t_ESP_RST_SW => "소프트웨어 재시작",
+            sys::esp_reset_reason_t_ESP_RST_PANIC => "패닉",
+            sys::esp_reset_reason_t_ESP_RST_INT_WDT
+            | sys::esp_reset_reason_t_ESP_RST_TASK_WDT
+            | sys::esp_reset_reason_t_ESP_RST_WDT => "워치독",
+            sys::esp_reset_reason_t_ESP_RST_DEEPSLEEP => "딥슬립 복귀",
+            sys::esp_reset_reason_t_ESP_RST_BROWNOUT => "저전압",
+            sys::esp_reset_reason_t_ESP_RST_USB => "USB",
+            _ => "기타",
+        };
+        let mut text = format!("리셋={reset}({})", self.reset);
+        if self.reset == sys::esp_reset_reason_t_ESP_RST_DEEPSLEEP {
+            let wake = match self.wake {
+                sys::esp_sleep_source_t_ESP_SLEEP_WAKEUP_GPIO => "버튼",
+                sys::esp_sleep_source_t_ESP_SLEEP_WAKEUP_TIMER => "타이머",
+                _ => "기타",
+            };
+            text += &format!(" 기상={wake}({})", self.wake);
+            for pin in (0..32).filter(|p| self.wake_pins & (1 << p) != 0) {
+                text += &format!(" GPIO{pin}");
+            }
+        }
+        text
+    }
+}
+
+/// 이번 부팅을 기록에 더하고, 최근 부팅 기록을 최근 것부터 돌려준다 (첫 칸이 이번 부팅).
+pub fn record_boot() -> Vec<BootInfo> {
+    const MAGIC: u32 = 0xB007_1061;
+    let mut history = Vec::with_capacity(BOOT_HISTORY);
+    history.push(BootInfo::current());
+    if BOOT_LOG_MAGIC.load(Relaxed) == MAGIC {
+        let count = (BOOT_LOG_COUNT.load(Relaxed) as usize).min(BOOT_HISTORY);
+        history.extend(BOOT_LOG[..count].iter().map(|slot| BootInfo {
+            reset: slot[0].load(Relaxed),
+            wake: slot[1].load(Relaxed),
+            wake_pins: slot[2].load(Relaxed),
+        }));
+        history.truncate(BOOT_HISTORY);
+    }
+    for (slot, info) in BOOT_LOG.iter().zip(&history) {
+        slot[0].store(info.reset, Relaxed);
+        slot[1].store(info.wake, Relaxed);
+        slot[2].store(info.wake_pins, Relaxed);
+    }
+    BOOT_LOG_COUNT.store(history.len() as u32, Relaxed);
+    BOOT_LOG_MAGIC.store(MAGIC, Relaxed);
+    history
 }
 
 /// 딥슬립에 들어가기 전에 저장한 자이로 바이어스. 딥슬립에서 깨어난 경우에만 있다.
@@ -92,6 +207,10 @@ pub fn deep_sleep(bias: V3) -> ! {
         sys::gpio_set_direction(LED_PIN, sys::gpio_mode_t_GPIO_MODE_OUTPUT);
         sys::gpio_set_level(LED_PIN, 0);
         sys::gpio_hold_en(LED_PIN);
+        // 기존 기상 조건을 모두 지운다. ESP-IDF는 자동 라이트 슬립을 켤 때(esp_pm_configure)
+        // 0초 타이머 기상을 등록해 두고 그대로 남긴다. 지우지 않으면 딥슬립에 들자마자
+        // 타이머로 깨어나 캘리브레이션부터 다시 한다 (실제로 겪음).
+        sys::esp_sleep_disable_wakeup_source(sys::esp_sleep_source_t_ESP_SLEEP_WAKEUP_ALL);
         // 풀업은 ESP-IDF가 기상 조건(LOW)에 맞춰 잠들기 직전에 켠다
         // (CONFIG_ESP_SLEEP_GPIO_ENABLE_INTERNAL_RESISTORS, 기본값).
         let err = sys::esp_deep_sleep_enable_gpio_wakeup(
@@ -105,4 +224,13 @@ pub fn deep_sleep(bias: V3) -> ! {
         }
         sys::esp_deep_sleep_start()
     }
+}
+
+/// 부팅 기록을 최근 것부터 화살표로 이은 한 줄 (예: "USB←딥슬립/버튼GPIO3←전원")
+pub fn summarize(history: &[BootInfo]) -> String {
+    history
+        .iter()
+        .map(BootInfo::short)
+        .collect::<Vec<_>>()
+        .join("←")
 }
