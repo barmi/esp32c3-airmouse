@@ -1,5 +1,9 @@
+use crate::orientation::V3;
 use esp_idf_svc::hal::i2c::I2cDriver;
-use icm42670::{accelerometer::vector::F32x3, Address, GyroOdr, GyroRange, Icm42670, PowerMode};
+use icm42670::{
+    accelerometer::Accelerometer, AccelOdr, AccelRange, Address, GyroOdr, GyroRange, Icm42670,
+    PowerMode,
+};
 
 /// ICM-42670-P 래퍼.
 ///
@@ -7,6 +11,7 @@ use icm42670::{accelerometer::vector::F32x3, Address, GyroOdr, GyroRange, Icm426
 /// - 6축 low-noise 모드
 /// - 자이로 ±2000dps — 빠른 손동작에도 포화되지 않도록 최대 범위
 /// - 자이로 ODR 200Hz (메인 루프 100Hz보다 높게 잡아 최신 값 보장)
+/// - 가속도 ±4g, ODR 200Hz — 중력 방향 추정용. 손을 휘두를 때의 가속까지 담는다
 pub struct Imu<'d> {
     drv: Icm42670<I2cDriver<'d>>,
 }
@@ -18,12 +23,21 @@ impl<'d> Imu<'d> {
             .map_err(err)?;
         drv.set_gyro_range(GyroRange::Deg2000).map_err(err)?;
         drv.set_gyro_odr(GyroOdr::Hz200).map_err(err)?;
+        drv.set_accel_range(AccelRange::G4).map_err(err)?;
+        drv.set_accel_odr(AccelOdr::Hz200).map_err(err)?;
         Ok(Self { drv })
     }
 
     /// 자이로 각속도 (deg/sec)
-    pub fn gyro_dps(&mut self) -> anyhow::Result<F32x3> {
-        self.drv.gyro_norm().map_err(err)
+    pub fn gyro_dps(&mut self) -> anyhow::Result<V3> {
+        let g = self.drv.gyro_norm().map_err(err)?;
+        Ok(V3::new(g.x, g.y, g.z))
+    }
+
+    /// 가속도 (g). 정지 시 "위" 방향을 가리킨다 (수평으로 두면 z ≈ +1).
+    pub fn accel_g(&mut self) -> anyhow::Result<V3> {
+        let a = self.drv.accel_norm().map_err(err)?;
+        Ok(V3::new(a.x, a.y, a.z))
     }
 
     /// 정지 상태를 가정하고 자이로 바이어스를 측정한다.
@@ -32,7 +46,7 @@ impl<'d> Imu<'d> {
     /// 나온다. 포화 샘플이 하나만 평균에 섞여도 바이어스가 10dps 단위로
     /// 틀어져 커서가 흐르므로, 앞쪽 `discard`개를 버리는 것에 더해
     /// 정지 상태로 볼 수 없는 샘플은 평균에서 제외한다.
-    pub fn calibrate_gyro(&mut self, discard: usize, samples: usize) -> anyhow::Result<F32x3> {
+    pub fn calibrate_gyro(&mut self, discard: usize, samples: usize) -> anyhow::Result<V3> {
         use esp_idf_svc::hal::delay::FreeRtos;
 
         /// 정지 상태로 인정하는 각속도 상한(dps). 이 값을 넘는 샘플은
@@ -74,7 +88,7 @@ impl<'d> Imu<'d> {
             log::info!("캘리브레이션: {rejected}개 샘플 제외 (움직임/스핀업)");
         }
         let n = kept as f32;
-        Ok(F32x3::new(sx / n, sy / n, sz / n))
+        Ok(V3::new(sx / n, sy / n, sz / n))
     }
 }
 

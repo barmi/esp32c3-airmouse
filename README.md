@@ -66,6 +66,7 @@ ESP32-C3에는 USB OTG가 없어 USB 유선 마우스로는 동작할 수 없으
     └── src/
         ├── main.rs          # 초기화 + 100Hz 메인 루프
         ├── imu.rs           # IMU 읽기 + 자이로 캘리브레이션
+        ├── orientation.rs   # 중력 방향 추정 + 기울기 보정
         ├── mapping.rs       # 각속도 → 커서 이동 (튜닝 상수)
         ├── ble_hid.rs       # BLE HID 마우스 (HOGP)
         ├── button.rs        # 버튼 디바운스 + 스크롤 오토리피트

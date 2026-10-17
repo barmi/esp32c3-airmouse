@@ -2,6 +2,7 @@ mod ble_hid;
 mod button;
 mod imu;
 mod mapping;
+mod orientation;
 mod status_led;
 
 use ble_hid::{BleMouse, MouseReport};
@@ -13,10 +14,16 @@ use esp_idf_svc::hal::{
     units::Hertz,
 };
 use mapping::{CursorMapper, SCROLL_REPEAT_DELAY_MS, SCROLL_REPEAT_MS, SCROLL_SIGN};
+use orientation::Orientation;
 use status_led::{Status, StatusLed};
+use std::time::Instant;
 
 /// 메인 루프 주기 (ms). IMU 샘플링/HID 리포트 주기이기도 하다.
 const LOOP_PERIOD_MS: u32 = 10;
+
+/// 실측 루프 주기의 상한(초). 재캘리브레이션처럼 루프가 오래 멈췄던 직후
+/// 한 틱의 적분이 튀지 않도록 막는다.
+const MAX_DT_S: f32 = 0.05;
 
 /// HID 리포트의 버튼 비트
 const BTN_LEFT: u8 = 0x01;
@@ -76,6 +83,8 @@ fn main() -> anyhow::Result<()> {
     );
 
     let mut mapper = CursorMapper::default();
+    let mut orient = Orientation::default();
+    let mut last_tick = Instant::now();
     let mut prev_buttons = 0u8;
     let mut prev_btn_state = 0u8;
     let mut tick: u32 = 0;
@@ -124,13 +133,22 @@ fn main() -> anyhow::Result<()> {
             }
             // 캘리브레이션 동안 쌓였을 잔여 이동량을 버린다
             mapper = CursorMapper::default();
+            last_tick = Instant::now();
             continue;
         }
 
-        let gyro = imu.gyro_dps()?;
+        // 루프 주기는 10ms 대기 + 처리 시간이라 고정값이 아니다. 실측한다.
+        let now = Instant::now();
+        let dt = now.duration_since(last_tick).as_secs_f32().min(MAX_DT_S);
+        last_tick = now;
 
-        // 축 매핑: yaw=Z(좌우 회전) → dx, pitch=X(상하 기울임) → dy
-        let (dx, dy) = mapper.update(gyro.z - bias.z, gyro.x - bias.x);
+        let gyro = imu.gyro_dps()? - bias;
+        orient.update(gyro, imu.accel_g()?, dt);
+
+        // 기울기 보정: 보드를 옆으로 기울여 쥐어도 실제 좌우·상하로 나눈다.
+        // 수평이면 기존 축(yaw=Z, pitch=X)과 같다.
+        let (yaw_rate, pitch_rate) = orient.world_rates(gyro);
+        let (dx, dy) = mapper.update(yaw_rate, pitch_rate);
 
         let mut buttons = 0u8;
         if btn_left.pressed() {
@@ -177,10 +195,12 @@ fn main() -> anyhow::Result<()> {
         // 5초에 한 번 상태 로그 (시리얼이 밀리지 않게)
         if tick % 500 == 0 {
             log::info!(
-                "connected={} | gyro-bias[dps] yaw(z)={:+7.2} pitch(x)={:+7.2}",
+                "connected={} | yaw={:+7.2} pitch={:+7.2} dps | 기울기={:+5.1}° | dt={:.1}ms",
                 mouse.connected(),
-                gyro.z - bias.z,
-                gyro.x - bias.x
+                yaw_rate,
+                pitch_rate,
+                orient.roll_deg(),
+                dt * 1000.0
             );
         }
 
