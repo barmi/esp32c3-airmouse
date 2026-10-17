@@ -77,6 +77,7 @@ fn main() -> anyhow::Result<()> {
 
     let mut mapper = CursorMapper::default();
     let mut prev_buttons = 0u8;
+    let mut prev_btn_state = 0u8;
     let mut tick: u32 = 0;
     loop {
         btn_left.update();
@@ -84,6 +85,24 @@ fn main() -> anyhow::Result<()> {
         btn_scroll_up.update();
         btn_scroll_down.update();
         btn_recal.update();
+
+        // 버튼 상태가 바뀔 때만 로그 (배선 확인용, 사람 손 속도라 시리얼을 밀지 않는다)
+        let btn_state = btn_left.pressed() as u8
+            | (btn_right.pressed() as u8) << 1
+            | (btn_scroll_up.pressed() as u8) << 2
+            | (btn_scroll_down.pressed() as u8) << 3
+            | (btn_recal.pressed() as u8) << 4;
+        if btn_state != prev_btn_state {
+            log::info!(
+                "버튼: 좌={} 우={} 스크롤↑={} 스크롤↓={} BOOT={}",
+                btn_left.pressed(),
+                btn_right.pressed(),
+                btn_scroll_up.pressed(),
+                btn_scroll_down.pressed(),
+                btn_recal.pressed()
+            );
+            prev_btn_state = btn_state;
+        }
 
         // BOOT 버튼: 커서가 흐를 때 재부팅 없이 영점을 다시 잡는다.
         // 자이로는 이미 워밍업된 상태라 폐기 샘플은 적게 잡는다.
@@ -145,9 +164,11 @@ fn main() -> anyhow::Result<()> {
                 dy,
                 wheel,
             };
-            // 버튼 상태가 바뀐 리포트는 이동량이 0이어도 반드시 보낸다
-            // (누름/뗌이 모두 전달되어야 클릭과 드래그가 성립한다)
-            if !report.is_zero() || buttons != prev_buttons {
+            // 움직임·휠이 있거나 버튼 상태가 바뀐 틱에만 보낸다.
+            // 버튼 변화는 이동량이 0이어도 반드시 보낸다 (누름/뗌이 모두 전달되어야
+            // 클릭과 드래그가 성립한다). 반대로 누르고만 있는 동안은 보내지 않는다 —
+            // 호스트가 버튼 상태를 기억하므로 같은 리포트를 100Hz로 반복할 필요가 없다.
+            if dx != 0 || dy != 0 || wheel != 0 || buttons != prev_buttons {
                 mouse.send(&report);
             }
         }

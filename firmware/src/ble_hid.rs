@@ -51,12 +51,6 @@ pub struct MouseReport {
     pub wheel: i8,
 }
 
-impl MouseReport {
-    pub fn is_zero(&self) -> bool {
-        self.buttons == 0 && self.dx == 0 && self.dy == 0 && self.wheel == 0
-    }
-}
-
 /// BLE HID(HOGP) 마우스.
 ///
 /// ESP32-C3에는 USB OTG가 없어서 USB HID는 불가능 - BLE HID가 유일한 경로다.
