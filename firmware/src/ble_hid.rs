@@ -100,13 +100,6 @@ const PEN_TIP: u8 = 0x01;
 const PEN_BARREL: u8 = 0x02;
 const PEN_IN_RANGE: u8 = 0x04;
 
-/// macOS는 디지타이저 절대 좌표의 양 끝을 합쳐 15%(한쪽 7.5%) 잘라내고 나머지를
-/// 화면 전체에 펼친다 (IOHIDEventDriver의 kDefaultAbsoluteAxisRemovalPercentage).
-/// 그대로 보내면 92.5%에서 이미 화면 끝에 닿고 가운데 기준 배율이 18% 늘어나므로,
-/// 잘려 나갈 몫만큼 안쪽으로 줄여 보내 캘리브레이션한 모서리가 화면 모서리에 정확히
-/// 오게 한다. 가장자리를 자르지 않는 OS에서는 0으로 바꿔야 끝까지 간다.
-const HOST_EDGE_REMOVAL_PERCENT: u32 = 15;
-
 /// 펜 입력 리포트. 디스크립터의 Report ID 2와 필드 순서가 같아야 한다.
 /// 리틀 엔디언으로 보내야 하는데 ESP32-C3(RISC-V)가 리틀 엔디언이라 그대로 쓴다.
 #[derive(IntoBytes, Immutable, Clone, Copy, Default)]
@@ -116,13 +109,6 @@ struct PenReport {
     switches: u8,
     x: u16,
     y: u16,
-}
-
-/// 0..=ABS_MAX 위치를 호스트가 잘라낼 가장자리만큼 안쪽으로 줄인다.
-fn to_host_logical(pos: u16) -> u16 {
-    let max = ABS_MAX as u32;
-    let margin = max * HOST_EDGE_REMOVAL_PERCENT / 200;
-    (margin + pos.min(ABS_MAX) as u32 * (max - 2 * margin) / max) as u16
 }
 
 /// BLE HID(HOGP) 마우스.
@@ -219,10 +205,13 @@ impl BleMouse {
         if in_range {
             switches |= PEN_IN_RANGE;
         }
+        // macOS(BLE는 DriverKit의 AppleUserHIDEventDriver가 처리)는 0..=ABS_MAX를
+        // 화면에 그대로 펼친다. 실제 커서 위치를 읽어 확인했다 — 가장자리를 잘라내는
+        // 것은 커널 드라이버(IOHIDEventDriver)의 동작이라 여기엔 해당하지 않는다.
         let report = PenReport {
             switches,
-            x: to_host_logical(x),
-            y: to_host_logical(y),
+            x: x.min(ABS_MAX),
+            y: y.min(ABS_MAX),
         };
         self.input_abs.lock().set_value(report.as_bytes()).notify();
     }
